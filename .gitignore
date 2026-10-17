@@ -1,0 +1,33 @@
+# 編譯產物與測試覆蓋率
+/bin/
+/gphotos-indexer
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.*
+
+# 本地執行期資料與 Chrome Session (含個人憑證與縮圖，不入版控)
+data/
+chrome-profile/
+thumbs/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# 環境變數與機敏設定
+.env
+.env.*
+
+# 系統與編輯器暫存
+.DS_Store
+.AppleDouble
+.LSOverride
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

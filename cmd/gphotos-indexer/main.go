@@ -1,0 +1,108 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+
+	"github.com/local/gphotos-indexer/internal/db"
+	"github.com/local/gphotos-indexer/internal/scraper"
+	"github.com/local/gphotos-indexer/internal/server"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	subcmd := os.Args[1]
+	switch subcmd {
+	case "auth":
+		fs := flag.NewFlagSet("auth", flag.ExitOnError)
+		dataDir := fs.String("data", "./data", "資料與 Chrome Profile 儲存目錄")
+		_ = fs.Parse(os.Args[2:])
+
+		store := mustOpenDB(*dataDir)
+		defer store.Close()
+
+		runner := scraper.NewRunner(scraper.Config{DataDir: *dataDir, Headless: false}, store)
+		if err := runner.Auth(ctx); err != nil {
+			log.Fatalf("Auth 失敗: %v", err)
+		}
+
+	case "sync":
+		fs := flag.NewFlagSet("sync", flag.ExitOnError)
+		dataDir := fs.String("data", "./data", "資料與 SQLite 儲存目錄")
+		headless := fs.Bool("headless", true, "是否以 Headless 模式背景執行")
+		maxItems := fs.Int("max-items", 200, "單次同步最大抓取張數 (0 為不限制)")
+		forceFull := fs.Bool("force-full", false, "忽略 Watermark 強制向下全庫掃描")
+		fetchDetails := fs.Bool("fetch-details", false, "自動開啟資訊欄巡覽以補齊原始檔名與相機 EXIF")
+		_ = fs.Parse(os.Args[2:])
+
+		store := mustOpenDB(*dataDir)
+		defer store.Close()
+
+		runner := scraper.NewRunner(scraper.Config{
+			DataDir:      *dataDir,
+			Headless:     *headless,
+			MaxItems:     *maxItems,
+			ForceFull:    *forceFull,
+			FetchDetails: *fetchDetails,
+		}, store)
+
+		if err := runner.Sync(ctx); err != nil {
+			log.Fatalf("Sync 失敗: %v", err)
+		}
+
+	case "serve":
+		fs := flag.NewFlagSet("serve", flag.ExitOnError)
+		dataDir := fs.String("data", "./data", "資料與 SQLite 儲存目錄")
+		port := fs.Int("port", 8080, "本地 Web UI 監聽埠號")
+		_ = fs.Parse(os.Args[2:])
+
+		store := mustOpenDB(*dataDir)
+		defer store.Close()
+
+		srv := server.New(store, *dataDir, *port)
+		if err := srv.Start(); err != nil {
+			log.Fatalf("Server 異常終止: %v", err)
+		}
+
+	default:
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func mustOpenDB(dataDir string) *db.Store {
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		log.Fatalf("無法建立資料目錄: %v", err)
+	}
+	dbPath := filepath.Join(dataDir, "index.db")
+	store, err := db.Open(dbPath)
+	if err != nil {
+		log.Fatalf("無法開啟 SQLite 資料庫: %v", err)
+	}
+	return store
+}
+
+func printUsage() {
+	fmt.Println("gphotos-indexer v0.1.0 — Google Photos 本地縮圖與極速檢索工具")
+	fmt.Println("")
+	fmt.Println("用法:")
+	fmt.Println("  gphotos-indexer <command> [flags]")
+	fmt.Println("")
+	fmt.Println("可用子命令:")
+	fmt.Println("  auth    啟動有頭 Chrome 視窗完成 Google 帳號登入並保存 Session")
+	fmt.Println("  sync    攔截 batchexecute 與 DOM，自動抓取 WebP 縮圖與 Metadata 存入 SQLite")
+	fmt.Println("  serve   啟動本地極速搜尋 Web UI (點擊直接跳轉 Google Photos 雲端原圖)")
+}

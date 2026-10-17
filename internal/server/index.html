@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google Photos 本地極速索引庫</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <header class="sticky top-0 z-20 bg-slate-900/90 backdrop-blur border-b border-slate-800 px-6 py-4">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center gap-4 justify-between">
+      <div class="flex items-center gap-3">
+        <span class="text-2xl">⚡</span>
+        <div>
+          <h1 class="text-lg font-bold tracking-tight">gphotos-indexer</h1>
+          <p id="statsText" class="text-xs text-slate-400">正在載入本地索引...</p>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-3 flex-1 max-w-3xl justify-end">
+        <input id="qInput" type="text" placeholder="搜尋檔名 (IMG_...)、相機型號、地點或描述..."
+          class="w-full sm:w-72 bg-slate-800 border border-slate-700 rounded-lg px-3.5 py-2 text-sm focus:outline-none focus:border-sky-500" />
+        <select id="typeSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+          <option value="all">全部類型</option>
+          <option value="photo">相片 (Photo)</option>
+          <option value="video">影片 (Video)</option>
+        </select>
+        <input id="dateFrom" type="date" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300" />
+        <span class="text-slate-500 text-xs">至</span>
+        <input id="dateTo" type="date" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300" />
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto p-6">
+    <div id="grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3"></div>
+  </main>
+
+  <script>
+    const qInput = document.getElementById('qInput');
+    const typeSelect = document.getElementById('typeSelect');
+    const dateFrom = document.getElementById('dateFrom');
+    const dateTo = document.getElementById('dateTo');
+    const grid = document.getElementById('grid');
+    const statsText = document.getElementById('statsText');
+
+    let timer = null;
+    function triggerSearch() {
+      clearTimeout(timer);
+      timer = setTimeout(loadPhotos, 120);
+    }
+
+    [qInput, typeSelect, dateFrom, dateTo].forEach(function(el) {
+      el.addEventListener('input', triggerSearch);
+    });
+
+    async function loadPhotos() {
+      const params = new URLSearchParams({
+        q: qInput.value,
+        type: typeSelect.value,
+        date_from: dateFrom.value,
+        date_to: dateTo.value,
+        limit: '240'
+      });
+      const res = await fetch('/api/photos?' + params.toString());
+      const data = await res.json();
+      const items = data.items || [];
+      statsText.textContent = '符合條件: ' + data.total + ' 張 (點擊直接開啟 Google Photos 雲端原圖)';
+
+      if (items.length === 0) {
+        grid.innerHTML = '<div class="col-span-full text-center py-20 text-slate-500">找不到符合條件的相片，請先執行 sync 或調整過濾條件。</div>';
+        return;
+      }
+
+      grid.innerHTML = items.map(function(it) {
+        const dateStr = it.taken_at ? new Date(it.taken_at * 1000).toISOString().slice(0, 10) : '未知日期';
+        const thumbSrc = it.thumb_path ? ('/' + it.thumb_path) : '';
+        const label = it.filename || it.description || it.id.slice(0, 12);
+        const mediaHtml = thumbSrc
+          ? '<img src="' + thumbSrc + '" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition duration-200" />'
+          : '<div class="w-full h-full flex items-center justify-center text-xs text-slate-600 p-2 text-center">' + label + '</div>';
+
+        return '<a href="' + it.product_url + '" target="_blank" rel="noopener noreferrer" ' +
+               'class="group relative aspect-square bg-slate-900 rounded-lg overflow-hidden border border-slate-800 hover:border-sky-500 transition">' +
+               mediaHtml +
+               '<div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent p-2 text-[11px] leading-tight">' +
+                 '<div class="font-medium text-slate-100 truncate">' + label + '</div>' +
+                 '<div class="text-slate-400 flex justify-between mt-0.5">' +
+                   '<span>' + dateStr + '</span>' +
+                   '<span>' + (it.camera_model || '') + '</span>' +
+                 '</div>' +
+               '</div>' +
+               '</a>';
+      }).join('');
+    }
+
+    loadPhotos();
+  </script>
+</body>
+</html>
