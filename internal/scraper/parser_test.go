@@ -15,11 +15,15 @@ func TestParseBatchExecute(t *testing.T) {
 		"210\n" +
 		"[" +
 		"  [\"wrb.fr\", \"fDcn4b\", \"[[\\\"AF1QipMockVideoKey0002\\\",null,1769409130000,null,[\\\"https://lh3.googleusercontent.com/pw/AP1GczMockBaseUrl2=w400-h400-c\\\",1920,1080],[\\\"IMG_20260126_0912.MOV\\\",[25.0777,121.3894]]]]\", null, null, null, \"generic\"]" +
+		"]\n" +
+		"230\n" +
+		"[" +
+		"  [\"wrb.fr\", \"fDcn4b\", \"[[\\\"AF1QipMockVideoKey0003\\\",null,1769409200000,null,[\\\"https://photos.fife.usercontent.google.com/pw/AP1GczMockFifeUrl=w124-h220-k-no\\\",1080,1920],[\\\"VID_20261016_0251.mkv\\\",null]]]\", null, null, null, \"generic\"]" +
 		"]\n"
 
 	items := ParseBatchExecute(mockResponse)
-	if len(items) != 2 {
-		t.Fatalf("預期解析出 2 筆項目，實際取得 %d 筆", len(items))
+	if len(items) != 3 {
+		t.Fatalf("預期解析出 3 筆項目，實際取得 %d 筆", len(items))
 	}
 
 	byID := make(map[string]db.MediaItem)
@@ -58,6 +62,48 @@ func TestParseBatchExecute(t *testing.T) {
 	}
 	if video.Latitude != 25.0777 || video.Longitude != 121.3894 {
 		t.Errorf("GPS 座標解析錯誤: 預期 (25.0777, 121.3894), 實際為 (%f, %f)", video.Latitude, video.Longitude)
+	}
+
+	// 斷言 3：驗證 .mkv 格式與 photos.fife.usercontent.google.com BaseURL
+	mkvVideo, ok := byID["AF1QipMockVideoKey0003"]
+	if !ok {
+		t.Fatalf("找不到預期的影片 ID: AF1QipMockVideoKey0003")
+	}
+	if mkvVideo.Filename != "VID_20261016_0251.mkv" {
+		t.Errorf("檔名解析錯誤: 預期 VID_20261016_0251.mkv, 實際為 %s", mkvVideo.Filename)
+	}
+	if mkvVideo.MediaType != "video" {
+		t.Errorf("媒體類型應根據 .mkv 自動識別為 video, 實際為 %s", mkvVideo.MediaType)
+	}
+	if mkvVideo.BaseURL != "https://photos.fife.usercontent.google.com/pw/AP1GczMockFifeUrl" {
+		t.Errorf("BaseURL 剝除錯誤: 實際為 %s", mkvVideo.BaseURL)
+	}
+	if mkvVideo.Width != 1080 || mkvVideo.Height != 1920 {
+		t.Errorf("解析度解析錯誤: 預期 1080x1920, 實際為 %dx%d", mkvVideo.Width, mkvVideo.Height)
+	}
+}
+
+func TestParseBatchExecute_InitDataCallback(t *testing.T) {
+	scriptPayload := `AF_initDataCallback({key: 'ds:8', hash: '9', data:[[["AF1QipMockInitVideo0004",["https://photos.fife.usercontent.google.com/pw/AP1GczInitUrl",1080,1920],1792090318000,null,null,null,null,null,null,{"76647426":[1080,1920]}]]]});`
+	items := ParseBatchExecute(scriptPayload)
+	if len(items) != 1 {
+		t.Fatalf("預期解析出 1 筆項目，實際為 %d", len(items))
+	}
+	it := items[0]
+	if it.ID != "AF1QipMockInitVideo0004" {
+		t.Errorf("ID 不符: %s", it.ID)
+	}
+	if it.TakenAt != 1792090318 {
+		t.Errorf("TakenAt 不符: %d", it.TakenAt)
+	}
+	if it.BaseURL != "https://photos.fife.usercontent.google.com/pw/AP1GczInitUrl" {
+		t.Errorf("BaseURL 不符: %s", it.BaseURL)
+	}
+	if it.Width != 1080 || it.Height != 1920 {
+		t.Errorf("解析度不符: %dx%d", it.Width, it.Height)
+	}
+	if it.MediaType != "video" {
+		t.Errorf("媒體類型應為 video，實際為 %s", it.MediaType)
 	}
 }
 

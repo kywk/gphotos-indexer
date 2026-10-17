@@ -2,9 +2,11 @@ package server
 
 import (
 	_ "embed"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -30,7 +32,7 @@ func New(store *db.Store, dataDir string, port int) *Server {
 	}
 }
 
-func (s *Server) Start() error {
+func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 
 	thumbsDir := filepath.Join(s.dataDir, "thumbs")
@@ -39,8 +41,40 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /", s.handleIndex)
 
 	addr := fmt.Sprintf(":%d", s.port)
-	log.Printf("⚡ 本地照片極速檢索介面已啟動: http://localhost%s", addr)
-	return http.ListenAndServe(addr, mux)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("監聽埠號失敗 %s: %w", addr, err)
+	}
+	defer ln.Close()
+
+	actualPort := ln.Addr().(*net.TCPAddr).Port
+	log.Printf("⚡ 本地照片極速檢索介面已啟動: http://localhost:%d", actualPort)
+
+	httpServer := &http.Server{
+		Handler: mux,
+	}
+
+	errChan := make(chan error, 1)
+	go func() {
+		if err := httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+			errChan <- err
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		log.Println("\n🛑 接收到中斷訊號 (Ctrl+C)，正在關閉 Web 伺服器...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			_ = httpServer.Close()
+			return err
+		}
+		log.Println("👋 Web 伺服器已安全結束。")
+		return nil
+	case err := <-errChan:
+		return err
+	}
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {

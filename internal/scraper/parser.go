@@ -10,8 +10,25 @@ import (
 
 var (
 	reMediaKey = regexp.MustCompile("^AF1Qip[A-Za-z0-9_-]{10,60}$")
-	reFilename = regexp.MustCompile("(?i)^[^/\\\\:*?\"<>|]{1,120}\\.(jpg|jpeg|png|heic|webp|gif|mp4|mov|avi|dng|raw)$")
+	reFilename = regexp.MustCompile("(?i)^[^/\\\\:*?\"<>|]{1,120}\\.(jpg|jpeg|png|heic|webp|gif|mp4|mov|avi|dng|raw|mkv|webm|m4v|3gp)$")
 )
+
+func isGoogleMediaURL(u string) bool {
+	if !strings.HasPrefix(u, "https://") {
+		return false
+	}
+	return strings.Contains(u, "googleusercontent.com/") ||
+		strings.Contains(u, "usercontent.google.com/") ||
+		strings.Contains(u, "ggpht.com/")
+}
+
+func isVideoFilename(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, ".mp4") || strings.HasSuffix(lower, ".mov") ||
+		strings.HasSuffix(lower, ".mkv") || strings.HasSuffix(lower, ".webm") ||
+		strings.HasSuffix(lower, ".m4v") || strings.HasSuffix(lower, ".3gp") ||
+		strings.HasSuffix(lower, ".avi")
+}
 
 func ParseBatchExecute(rawBody string) []db.MediaItem {
 	idx := strings.Index(rawBody, "[")
@@ -67,6 +84,22 @@ func walkEnvelope(node any, out map[string]*db.MediaItem) {
 		}
 	}
 
+	if len(arr) >= 2 {
+		if id, ok := arr[0].(string); ok && reMediaKey.MatchString(id) {
+			item, exists := out[id]
+			if !exists {
+				item = &db.MediaItem{
+					ID:         id,
+					ProductURL: "https://photos.google.com/photo/" + id,
+					MediaType:  "photo",
+				}
+				out[id] = item
+			}
+			extractFieldsFromMediaArray(arr, item)
+			return
+		}
+	}
+
 	for _, child := range arr {
 		walkEnvelope(child, out)
 	}
@@ -116,19 +149,18 @@ func extractFieldsFromMediaArray(arr []any, item *db.MediaItem) {
 func scanSubtree(node any, item *db.MediaItem) {
 	switch v := node.(type) {
 	case string:
-		if strings.HasPrefix(v, "https://lh3.googleusercontent.com/") && item.BaseURL == "" {
+		if isGoogleMediaURL(v) && item.BaseURL == "" {
 			parts := strings.Split(v, "=")
 			item.BaseURL = parts[0]
 		} else if reFilename.MatchString(v) && item.Filename == "" {
 			item.Filename = v
-			lower := strings.ToLower(v)
-			if strings.HasSuffix(lower, ".mp4") || strings.HasSuffix(lower, ".mov") {
+			if isVideoFilename(v) {
 				item.MediaType = "video"
 			}
 		}
 	case []any:
 		if len(v) >= 3 {
-			if u, ok := v[0].(string); ok && strings.HasPrefix(u, "https://lh3.googleusercontent.com/") {
+			if u, ok := v[0].(string); ok && isGoogleMediaURL(u) {
 				parts := strings.Split(u, "=")
 				item.BaseURL = parts[0]
 				if w, ok := toInt(v[1]); ok && w > 0 && w < 50000 {
@@ -148,6 +180,13 @@ func scanSubtree(node any, item *db.MediaItem) {
 					item.Longitude = lng
 				}
 			}
+		}
+		for _, child := range v {
+			scanSubtree(child, item)
+		}
+	case map[string]any:
+		if _, ok := v["76647426"]; ok {
+			item.MediaType = "video"
 		}
 		for _, child := range v {
 			scanSubtree(child, item)

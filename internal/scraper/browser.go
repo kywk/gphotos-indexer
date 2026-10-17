@@ -3,6 +3,8 @@ package scraper
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 	"github.com/local/gphotos-indexer/internal/db"
 )
@@ -107,11 +110,25 @@ func (r *Runner) Sync(ctx context.Context) error {
 	taskCtx, cancelTask := chromedp.NewContext(allocCtx)
 	defer cancelTask()
 
+	var batchMu sync.Mutex
+	batchReqs := make(map[network.RequestID]bool)
+
 	chromedp.ListenTarget(taskCtx, func(ev any) {
-		if res, ok := ev.(*network.EventResponseReceived); ok {
-			if strings.Contains(res.Response.URL, "batchexecute") {
-				reqID := res.RequestID
-				go func() {
+		switch e := ev.(type) {
+		case *network.EventRequestWillBeSent:
+			if strings.Contains(e.Request.URL, "batchexecute") {
+				batchMu.Lock()
+				batchReqs[e.RequestID] = true
+				batchMu.Unlock()
+			}
+		case *network.EventLoadingFinished:
+			batchMu.Lock()
+			isBatch := batchReqs[e.RequestID]
+			delete(batchReqs, e.RequestID)
+			batchMu.Unlock()
+
+			if isBatch {
+				go func(reqID network.RequestID) {
 					var body []byte
 					err := chromedp.Run(taskCtx, chromedp.ActionFunc(func(c context.Context) error {
 						var err error
@@ -121,11 +138,15 @@ func (r *Runner) Sync(ctx context.Context) error {
 					if err == nil && len(body) > 0 {
 						items := ParseBatchExecute(string(body))
 						for _, it := range items {
-							r.processItem(it)
+							r.processItem(taskCtx, it)
 						}
 					}
-				}()
+				}(e.RequestID)
 			}
+		case *network.EventLoadingFailed:
+			batchMu.Lock()
+			delete(batchReqs, e.RequestID)
+			batchMu.Unlock()
 		}
 	})
 
@@ -145,9 +166,17 @@ func (r *Runner) Sync(ctx context.Context) error {
 	))
 	for _, scriptTxt := range initScripts {
 		for _, it := range ParseBatchExecute(scriptTxt) {
-			r.processItem(it)
+			r.processItem(taskCtx, it)
 		}
 	}
+
+	type scrollResult struct {
+		AtBottom bool `json:"atBottom"`
+	}
+
+	consecutiveBottom := 0
+	lastSavedCount := 0
+	stalledSteps := 0
 
 	for step := 0; step < 300; step++ {
 		if r.shouldStop() {
@@ -156,10 +185,47 @@ func (r *Runner) Sync(ctx context.Context) error {
 
 		r.extractVisibleDOM(taskCtx)
 
-		_ = chromedp.Run(taskCtx, chromedp.Evaluate(
-			"window.scrollBy({ top: window.innerHeight * 0.85, behavior: 'smooth' });",
-			nil,
-		))
+		var sRes scrollResult
+		_ = chromedp.Run(taskCtx, chromedp.Evaluate(`(() => {
+			const candidates = Array.from(document.querySelectorAll('*')).filter(el => {
+				const s = window.getComputedStyle(el);
+				return (s.overflowY === 'scroll' || s.overflowY === 'auto') && el.scrollHeight > el.clientHeight;
+			});
+			candidates.sort((a, b) => b.scrollHeight - a.scrollHeight);
+			let atBottom = false;
+			if (candidates.length > 0) {
+				const target = candidates[0];
+				target.scrollBy({ top: target.clientHeight * 0.85, behavior: 'smooth' });
+				atBottom = (target.scrollTop + target.clientHeight >= target.scrollHeight - 50);
+			}
+			window.scrollBy({ top: window.innerHeight * 0.85, behavior: 'smooth' });
+			return { atBottom: atBottom };
+		})()`, &sRes))
+
+		r.mu.Lock()
+		currentSaved := r.savedCount
+		r.mu.Unlock()
+
+		if currentSaved == lastSavedCount {
+			stalledSteps++
+		} else {
+			stalledSteps = 0
+			lastSavedCount = currentSaved
+		}
+
+		if sRes.AtBottom {
+			consecutiveBottom++
+			if consecutiveBottom >= 5 && stalledSteps >= 5 {
+				log.Printf("⏹ 已抵達相簿時間軸最底部，無更多照片。")
+				break
+			}
+		} else {
+			consecutiveBottom = 0
+		}
+
+		if (step+1)%20 == 0 && stalledSteps >= 10 {
+			log.Printf("⏳ 正在向下捲動時間軸 (第 %d 次捲動，已索引 %d 張)...", step+1, currentSaved)
+		}
 
 		jitter := time.Duration(650+rand.Intn(550)) * time.Millisecond
 		time.Sleep(jitter)
@@ -179,6 +245,8 @@ type domPhoto struct {
 	Href      string `json:"href"`
 	ThumbURL  string `json:"thumbUrl"`
 	AriaLabel string `json:"ariaLabel"`
+	MediaType string `json:"mediaType"`
+	TakenAt   int64  `json:"takenAt"`
 }
 
 func (r *Runner) extractVisibleDOM(ctx context.Context) {
@@ -188,19 +256,55 @@ func (r *Runner) extractVisibleDOM(ctx context.Context) {
 		"return links.map(a => {" +
 		"  let thumb = '';" +
 		"  const img = a.querySelector('img');" +
-		"  if (img && img.src && img.src.includes('googleusercontent.com')) {" +
+		"  if (img && img.src && (img.src.includes('googleusercontent.com') || img.src.includes('usercontent.google.com') || img.src.includes('ggpht.com'))) {" +
 		"    thumb = img.src;" +
 		"  } else {" +
-		"    const bg = a.querySelector('[style*=\"googleusercontent.com\"]');" +
-		"    if (bg) {" +
-		"      const m = bg.style.backgroundImage.match(/url\\([\"']?(https:\\/\\/[^\"')]+)[\"']?\\)/);" +
-		"      if (m) thumb = m[1];" +
+		"    const bgEl = a.querySelector('[data-latest-bg]');" +
+		"    if (bgEl && bgEl.getAttribute('data-latest-bg')) {" +
+		"      thumb = bgEl.getAttribute('data-latest-bg');" +
+		"    } else {" +
+		"      const all = Array.from(a.querySelectorAll('*'));" +
+		"      for (const el of all) {" +
+		"        const bg = window.getComputedStyle(el).backgroundImage;" +
+		"        if (bg && (bg.includes('googleusercontent.com') || bg.includes('usercontent.google.com'))) {" +
+		"          const m = bg.match(/url\\([\"']?(https:\\/\\/[^\"')]+)[\"']?\\)/);" +
+		"          if (m) { thumb = m[1]; break; }" +
+		"        }" +
+		"      }" +
 		"    }" +
+		"  }" +
+		"  const ariaLabel = a.getAttribute('aria-label') || '';" +
+		"  let mediaType = 'photo';" +
+		"  const lowerLabel = ariaLabel.toLowerCase();" +
+		"  if (lowerLabel.includes('video') || ariaLabel.includes('影片') || ariaLabel.includes('視頻')) {" +
+		"    mediaType = 'video';" +
+		"  }" +
+		"  let takenAt = 0;" +
+		"  const cleanLabel = ariaLabel.replace(/\\u202f/g, ' ');" +
+		"  const enMatch = cleanLabel.match(/([A-Z][a-z]{2}\\s+\\d{1,2},\\s+\\d{4},?\\s+\\d{1,2}:\\d{2}:\\d{2}\\s*[AP]M)/i);" +
+		"  if (enMatch) {" +
+		"    const t = Date.parse(enMatch[1]);" +
+		"    if (!isNaN(t) && t > 0) takenAt = Math.floor(t / 1000);" +
+		"  }" +
+		"  const zhMatch = cleanLabel.match(/(\\d{4})年(\\d{1,2})月(\\d{1,2})日(?:\\s*(上午|下午)?(\\d{1,2}):(\\d{2}):(\\d{2}))?/);" +
+		"  if (zhMatch && takenAt === 0) {" +
+		"    let year = parseInt(zhMatch[1]);" +
+		"    let month = parseInt(zhMatch[2]) - 1;" +
+		"    let day = parseInt(zhMatch[3]);" +
+		"    let hour = zhMatch[5] ? parseInt(zhMatch[5]) : 0;" +
+		"    let min = zhMatch[6] ? parseInt(zhMatch[6]) : 0;" +
+		"    let sec = zhMatch[7] ? parseInt(zhMatch[7]) : 0;" +
+		"    if (zhMatch[4] === '下午' && hour < 12) hour += 12;" +
+		"    if (zhMatch[4] === '上午' && hour === 12) hour = 0;" +
+		"    const d = new Date(year, month, day, hour, min, sec);" +
+		"    if (!isNaN(d.getTime())) takenAt = Math.floor(d.getTime() / 1000);" +
 		"  }" +
 		"  return {" +
 		"    href: a.getAttribute('href') || ''," +
 		"    thumbUrl: thumb," +
-		"    ariaLabel: a.getAttribute('aria-label') || ''" +
+		"    ariaLabel: ariaLabel," +
+		"    mediaType: mediaType," +
+		"    takenAt: takenAt" +
 		"  };" +
 		"});" +
 		"})()"
@@ -226,12 +330,13 @@ func (r *Runner) extractVisibleDOM(ctx context.Context) {
 		if d.ThumbURL != "" {
 			base = strings.Split(d.ThumbURL, "=")[0]
 		}
-		r.processItem(db.MediaItem{
+		r.processItem(ctx, db.MediaItem{
 			ID:          id,
 			ProductURL:  "https://photos.google.com/photo/" + id,
 			BaseURL:     base,
 			Description: d.AriaLabel,
-			MediaType:   "photo",
+			MediaType:   d.MediaType,
+			TakenAt:     d.TakenAt,
 		})
 	}
 }
@@ -277,10 +382,15 @@ func (r *Runner) enrichDetailsViaUI(ctx context.Context) {
 				id = id[:qIdx]
 			}
 			if reMediaKey.MatchString(id) && (filename != "" || camera != "") {
+				mediaType := "photo"
+				if isVideoFilename(filename) {
+					mediaType = "video"
+				}
 				_ = r.store.Upsert(db.MediaItem{
 					ID:          id,
 					Filename:    filename,
 					CameraModel: camera,
+					MediaType:   mediaType,
 				})
 			}
 		}
@@ -296,7 +406,7 @@ func (r *Runner) enrichDetailsViaUI(ctx context.Context) {
 	}
 }
 
-func (r *Runner) processItem(item db.MediaItem) {
+func (r *Runner) processItem(ctx context.Context, item db.MediaItem) {
 	if item.ID == "" {
 		return
 	}
@@ -316,10 +426,14 @@ func (r *Runner) processItem(item db.MediaItem) {
 		r.mu.Lock()
 		r.hitCount++
 		r.mu.Unlock()
+	} else if !hasThumb && !alreadySeen {
+		r.mu.Lock()
+		r.hitCount = 0
+		r.mu.Unlock()
 	}
 
 	if !hasThumb && item.BaseURL != "" {
-		relPath, err := r.downloadThumb(item.ID, item.BaseURL)
+		relPath, err := r.downloadThumb(ctx, item.ID, item.BaseURL)
 		if err == nil {
 			item.ThumbPath = relPath
 		}
@@ -355,7 +469,11 @@ func (r *Runner) shouldStop() bool {
 	return false
 }
 
-func (r *Runner) downloadThumb(id, baseURL string) (string, error) {
+func (r *Runner) downloadThumb(ctx context.Context, id, baseURL string) (string, error) {
+	if strings.Contains(baseURL, "usercontent.google.com") && !strings.Contains(baseURL, "lh3.googleusercontent.com") {
+		return r.downloadThumbViaBrowser(ctx, id, baseURL)
+	}
+
 	thumbURL := baseURL + "=w300-h300-c-rw"
 	req, err := http.NewRequest("GET", thumbURL, nil)
 	if err != nil {
@@ -364,14 +482,13 @@ func (r *Runner) downloadThumb(id, baseURL string) (string, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 	resp, err := r.httpClient.Do(req)
-	if err != nil {
-		return "", err
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		return r.downloadThumbViaBrowser(ctx, id, baseURL)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("bad status: %d", resp.StatusCode)
-	}
 
 	filename := id + ".webp"
 	fullPath := filepath.Join(r.thumbsDir(), filename)
@@ -382,6 +499,60 @@ func (r *Runner) downloadThumb(id, baseURL string) (string, error) {
 	defer f.Close()
 
 	if _, err := io.Copy(f, resp.Body); err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(filepath.Join("thumbs", filename)), nil
+}
+
+func (r *Runner) downloadThumbViaBrowser(ctx context.Context, id, baseURL string) (string, error) {
+	if ctx == nil {
+		return "", fmt.Errorf("no browser context available")
+	}
+	thumbURL := baseURL + "=w300-h300-c-rw?authuser=0"
+	js := fmt.Sprintf(`new Promise((resolve) => {
+		fetch("%s", { credentials: "include" })
+			.then(r => {
+				if (!r.ok) return resolve("");
+				return r.blob();
+			})
+			.then(b => {
+				if (!b) return resolve("");
+				const reader = new FileReader();
+				reader.onloadend = () => resolve(reader.result || "");
+				reader.onerror = () => resolve("");
+				reader.readAsDataURL(b);
+			})
+			.catch(() => resolve(""));
+	})`, thumbURL)
+
+	var dataURL string
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(c context.Context) error {
+		val, _, err := runtime.Evaluate(js).WithAwaitPromise(true).Do(c)
+		if err != nil {
+			return err
+		}
+		if val != nil && val.Value != nil {
+			_ = json.Unmarshal(val.Value, &dataURL)
+		}
+		return nil
+	}))
+	if err != nil {
+		return "", err
+	}
+
+	comma := strings.Index(dataURL, ",")
+	if comma == -1 {
+		return "", fmt.Errorf("failed to fetch thumbnail via browser: %s", baseURL)
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(dataURL[comma+1:])
+	if err != nil {
+		return "", fmt.Errorf("decode thumbnail base64: %w", err)
+	}
+
+	filename := id + ".webp"
+	fullPath := filepath.Join(r.thumbsDir(), filename)
+	if err := os.WriteFile(fullPath, raw, 0644); err != nil {
 		return "", err
 	}
 	return filepath.ToSlash(filepath.Join("thumbs", filename)), nil

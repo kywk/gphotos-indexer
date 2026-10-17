@@ -76,12 +76,17 @@
         const dateStr = it.taken_at ? new Date(it.taken_at * 1000).toISOString().slice(0, 10) : '未知日期';
         const thumbSrc = it.thumb_path ? ('/' + it.thumb_path) : '';
         const label = it.filename || it.description || it.id.slice(0, 12);
+        const isVideo = it.media_type === 'video' || (it.filename && /\.(mp4|mov|mkv|webm|m4v|3gp|avi)$/i.test(it.filename));
+        const videoBadge = isVideo
+          ? '<div class="absolute top-2 right-2 bg-black/60 backdrop-blur rounded px-1.5 py-0.5 text-[10px] text-white flex items-center gap-1 font-semibold z-10"><span>▶</span><span>VIDEO</span></div>'
+          : '';
         const mediaHtml = thumbSrc
           ? '<img src="' + thumbSrc + '" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition duration-200" />'
           : '<div class="w-full h-full flex items-center justify-center text-xs text-slate-600 p-2 text-center">' + label + '</div>';
 
         return '<a href="' + it.product_url + '" target="_blank" rel="noopener noreferrer" ' +
                'class="group relative aspect-square bg-slate-900 rounded-lg overflow-hidden border border-slate-800 hover:border-sky-500 transition">' +
+               videoBadge +
                mediaHtml +
                '<div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent p-2 text-[11px] leading-tight">' +
                  '<div class="font-medium text-slate-100 truncate">' + label + '</div>' +

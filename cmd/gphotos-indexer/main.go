@@ -24,6 +24,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	go func() {
+		<-ctx.Done()
+		stop() // 恢復預設信號行為，若用戶再次按下 Ctrl+C 則強制退出
+	}()
+
 	subcmd := os.Args[1]
 	switch subcmd {
 	case "auth":
@@ -73,7 +78,7 @@ func main() {
 		defer store.Close()
 
 		srv := server.New(store, *dataDir, *port)
-		if err := srv.Start(); err != nil {
+		if err := srv.Start(ctx); err != nil {
 			log.Fatalf("Server 異常終止: %v", err)
 		}
 
