@@ -5,44 +5,158 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Google Photos 本地極速索引庫</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --header-offset: 52px;
+    }
+    /* 隱藏滾動條但保持滾動功能 */
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen">
-  <header class="sticky top-0 z-20 bg-slate-900/90 backdrop-blur border-b border-slate-800 px-6 py-4">
-    <div class="max-w-7xl mx-auto flex flex-wrap items-center gap-4 justify-between">
-      <div class="flex items-center gap-3">
-        <span class="text-2xl">⚡</span>
+  <!-- 頂部導航欄 (單列不折行，向下捲動關閉，向上捲動出現) -->
+  <header id="mainHeader" class="sticky top-0 z-40 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-4 sm:px-6 py-2.5 transition-transform duration-300 ease-in-out">
+    <div class="max-w-7xl mx-auto flex items-center justify-between gap-3 flex-nowrap">
+      <!-- 品牌標題與統計 -->
+      <div class="flex items-center gap-2.5 shrink-0">
+        <span class="text-xl">⚡</span>
         <div>
-          <h1 class="text-lg font-bold tracking-tight">gphotos-indexer</h1>
-          <p id="statsText" class="text-xs text-slate-400">正在載入本地索引...</p>
+          <h1 class="text-sm sm:text-base font-bold tracking-tight text-white leading-none">gphotos-indexer</h1>
+          <p id="statsText" class="text-[11px] text-slate-400 mt-1 leading-none truncate max-w-[130px] sm:max-w-xs md:max-w-md">正在載入索引...</p>
         </div>
       </div>
 
-      <div class="flex flex-wrap items-center gap-3 flex-1 max-w-3xl justify-end">
-        <input id="qInput" type="text" placeholder="搜尋檔名 (IMG_...)、相機型號、地點或描述..."
-          class="w-full sm:w-72 bg-slate-800 border border-slate-700 rounded-lg px-3.5 py-2 text-sm focus:outline-none focus:border-sky-500" />
-        <select id="typeSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+      <!-- 搜尋與過濾條件 (強制作為單列 flex-nowrap) -->
+      <div class="flex items-center gap-1.5 sm:gap-2 flex-nowrap shrink-0 overflow-x-auto no-scrollbar">
+        <input id="qInput" type="text" placeholder="搜尋檔名、相機、地點..."
+          class="w-32 sm:w-44 md:w-60 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500 shrink-0" />
+        <select id="typeSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-sky-500 shrink-0">
           <option value="all">全部類型</option>
-          <option value="photo">相片 (Photo)</option>
-          <option value="video">影片 (Video)</option>
+          <option value="photo">相片</option>
+          <option value="video">影片</option>
         </select>
-        <input id="dateFrom" type="date" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300" />
-        <span class="text-slate-500 text-xs">至</span>
-        <input id="dateTo" type="date" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300" />
+        <input id="dateFrom" type="date" class="w-28 sm:w-32 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-sky-500 shrink-0" />
+        <span class="text-slate-500 text-xs shrink-0">至</span>
+        <input id="dateTo" type="date" class="w-28 sm:w-32 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-sky-500 shrink-0" />
       </div>
     </div>
   </header>
 
-  <main class="max-w-7xl mx-auto p-6">
-    <div id="grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3"></div>
+  <!-- 主時間軸容器 -->
+  <main class="max-w-7xl mx-auto p-4 sm:p-6 pb-24">
+    <div id="timelineContainer" class="space-y-6"></div>
   </main>
+
+  <!-- 右側仿 Google Photos 快速跳轉時間軸軌道 (Timeline Scrubber) -->
+  <aside id="timelineScrubber" class="hidden fixed right-2 sm:right-3.5 top-24 bottom-12 z-30 flex flex-col justify-center items-end select-none pointer-events-none transition-opacity duration-300">
+    <!-- 懸浮年月指示徽章 -->
+    <div id="scrubberPill" class="pointer-events-none fixed right-14 sm:right-16 bg-slate-900/95 border border-sky-500/60 text-white font-medium text-xs px-3 py-1.5 rounded-lg shadow-2xl backdrop-blur opacity-0 transition-opacity duration-200">
+      2026 年 10 月
+    </div>
+    <!-- 縱向年/月按鈕軌道 -->
+    <div id="scrubberRail" class="pointer-events-auto bg-slate-900/85 backdrop-blur-md border border-slate-800 rounded-full py-2 px-1.5 shadow-2xl flex flex-col items-center gap-1 max-h-[75vh] overflow-y-auto no-scrollbar">
+      <!-- 動態插入年/月按鈕 -->
+    </div>
+  </aside>
+
+  <!-- 照片/影片詳情 Dialog -->
+  <div id="detailModal" class="fixed inset-0 z-50 hidden bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6" onclick="closeModalOnBackdrop(event)">
+    <!-- 左右快速切換箭頭 (支援點擊與鍵盤 ← →) -->
+    <button id="prevBtn" onclick="prevItem(event)" class="fixed left-2 sm:left-6 top-1/2 -translate-y-1/2 z-50 w-11 h-11 sm:w-13 sm:h-13 rounded-full bg-slate-900/85 hover:bg-slate-800 border border-slate-700/80 text-white flex items-center justify-center text-3xl pb-1 transition shadow-2xl hover:scale-110 active:scale-95 disabled:opacity-20 disabled:pointer-events-none cursor-pointer backdrop-blur-sm" title="上一張 (← 方向鍵)">
+      ‹
+    </button>
+    <button id="nextBtn" onclick="nextItem(event)" class="fixed right-2 sm:right-6 top-1/2 -translate-y-1/2 z-50 w-11 h-11 sm:w-13 sm:h-13 rounded-full bg-slate-900/85 hover:bg-slate-800 border border-slate-700/80 text-white flex items-center justify-center text-3xl pb-1 transition shadow-2xl hover:scale-110 active:scale-95 disabled:opacity-20 disabled:pointer-events-none cursor-pointer backdrop-blur-sm" title="下一張 (→ 方向鍵)">
+      ›
+    </button>
+
+    <!-- Modal 主體視窗 -->
+    <div class="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-2xl w-full overflow-hidden shadow-2xl flex flex-col max-h-[92vh]" onclick="event.stopPropagation()">
+      <!-- Modal Header -->
+      <div class="flex items-center justify-between px-5 py-3 border-b border-slate-800 bg-slate-900/90">
+        <div class="flex items-center gap-2.5 truncate flex-1 mr-3">
+          <span id="modalTypeBadge" class="text-xs px-2 py-0.5 rounded font-bold uppercase shrink-0"></span>
+          <h3 id="modalTitle" class="text-sm font-semibold truncate text-slate-200"></h3>
+        </div>
+        <div class="flex items-center gap-3 shrink-0">
+          <span id="modalCounter" class="text-xs text-slate-400 font-mono"></span>
+          <button onclick="closeModal()" class="text-slate-400 hover:text-slate-100 p-1 rounded-lg hover:bg-slate-800 transition text-lg leading-none" title="關閉 (Esc)">✕</button>
+        </div>
+      </div>
+
+      <!-- Modal Body -->
+      <div class="p-5 overflow-y-auto space-y-4">
+        <!-- 縮圖點擊區域：點擊縮圖前往 Google Photos -->
+        <div class="relative group aspect-video sm:aspect-[16/10] bg-slate-950 rounded-xl overflow-hidden border border-slate-800 cursor-pointer flex items-center justify-center" onclick="openGooglePhotos()" title="點擊在 Google Photos 開啟此項目">
+          <img id="modalThumb" src="" class="w-full h-full object-contain group-hover:scale-[1.02] transition duration-200" alt="縮圖預覽" />
+          <div class="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2 text-white font-medium text-sm backdrop-blur-[2px]">
+            <span class="text-xl">↗</span>
+            <span>點擊縮圖前往 Google Photos 雲端檢視</span>
+          </div>
+          <div id="modalThumbBadge" class="absolute bottom-2.5 right-2.5 bg-black/75 px-2 py-0.5 rounded text-xs text-slate-200 font-mono pointer-events-none"></div>
+        </div>
+
+        <!-- Metadata 表格資訊 -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+          <div class="bg-slate-800/60 p-2.5 rounded-lg border border-slate-700/50">
+            <span class="text-slate-400 block mb-0.5">原始檔名</span>
+            <span id="modalFilename" class="text-slate-200 font-mono font-medium break-all select-all"></span>
+          </div>
+          <div class="bg-slate-800/60 p-2.5 rounded-lg border border-slate-700/50">
+            <span class="text-slate-400 block mb-0.5">拍攝時間</span>
+            <span id="modalTakenAt" class="text-slate-200 font-medium"></span>
+          </div>
+          <div class="bg-slate-800/60 p-2.5 rounded-lg border border-slate-700/50">
+            <span class="text-slate-400 block mb-0.5">影片長度</span>
+            <span id="modalDuration" class="text-slate-200 font-medium"></span>
+          </div>
+          <div class="bg-slate-800/60 p-2.5 rounded-lg border border-slate-700/50">
+            <span class="text-slate-400 block mb-0.5">解析度 / 尺寸</span>
+            <span id="modalResolution" class="text-slate-200 font-medium"></span>
+          </div>
+          <div class="bg-slate-800/60 p-2.5 rounded-lg border border-slate-700/50 sm:col-span-2">
+            <span class="text-slate-400 block mb-0.5">相機 / 上傳來源</span>
+            <span id="modalCamera" class="text-slate-200 font-medium"></span>
+          </div>
+          <div class="bg-slate-800/60 p-2.5 rounded-lg border border-slate-700/50 sm:col-span-2">
+            <span class="text-slate-400 block mb-0.5">Google Photos 雲端連結</span>
+            <span id="modalUrl" class="text-sky-400 font-mono text-[11px] break-all select-all"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal Footer -->
+      <div class="px-5 py-3 border-t border-slate-800 bg-slate-900/90 flex flex-wrap items-center justify-between gap-2.5">
+        <div class="text-[11px] text-slate-400">
+          💡 提示：若預設瀏覽器非登入之 Google 帳號，請點「複製連結」貼至已登入視窗。
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="copyBtn" onclick="copyLink()" class="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 transition">
+            <span id="copyIcon">📋</span>
+            <span id="copyText">複製連結</span>
+          </button>
+          <button onclick="openGooglePhotos()" class="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium flex items-center gap-1.5 transition">
+            <span>↗</span>
+            <span>開啟雲端項目</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script>
     const qInput = document.getElementById('qInput');
     const typeSelect = document.getElementById('typeSelect');
     const dateFrom = document.getElementById('dateFrom');
     const dateTo = document.getElementById('dateTo');
-    const grid = document.getElementById('grid');
+    const timelineContainer = document.getElementById('timelineContainer');
     const statsText = document.getElementById('statsText');
+    const detailModal = document.getElementById('detailModal');
+    const mainHeader = document.getElementById('mainHeader');
+
+    let currentItems = [];
+    let currentModalIndex = -1;
+    let currentModalItem = null;
 
     let timer = null;
     function triggerSearch() {
@@ -54,49 +168,432 @@
       el.addEventListener('input', triggerSearch);
     });
 
+    function updateHeaderOffset() {
+      const isVisible = !mainHeader.classList.contains('-translate-y-full');
+      const offset = isVisible ? (mainHeader.offsetHeight || 52) + 'px' : '0px';
+      document.documentElement.style.setProperty('--header-offset', offset);
+    }
+
+    // 捲動監聽：向下捲動關閉 navbar 並讓日期標題置頂 (0px)；向上捲動展現 navbar
+    let lastScrollY = window.scrollY;
+    window.addEventListener('scroll', function() {
+      const currentScrollY = window.scrollY;
+
+      // 當彈窗開啟時不觸發 navbar 自動縮放
+      if (detailModal.classList.contains('hidden')) {
+        if (currentScrollY <= 10) {
+          // 最頂部必定顯示 navbar
+          if (mainHeader.classList.contains('-translate-y-full')) {
+            mainHeader.classList.remove('-translate-y-full');
+            updateHeaderOffset();
+          }
+        } else if (currentScrollY > lastScrollY && currentScrollY > 60) {
+          // 向下捲動 -> 關閉 navbar，日期標題置頂到 0px
+          if (!mainHeader.classList.contains('-translate-y-full')) {
+            mainHeader.classList.add('-translate-y-full');
+            updateHeaderOffset();
+          }
+        } else if (currentScrollY < lastScrollY) {
+          // 向上捲動 -> 出現 navbar，日期標題推至 navbar 下方
+          if (mainHeader.classList.contains('-translate-y-full')) {
+            mainHeader.classList.remove('-translate-y-full');
+            updateHeaderOffset();
+          }
+        }
+      }
+      lastScrollY = currentScrollY;
+
+      updateTimelineScrubberOnScroll();
+    }, { passive: true });
+
+    window.addEventListener('resize', updateHeaderOffset);
+
+    // 鍵盤監聽：Esc 關閉，← → 切換上下一張
+    document.addEventListener('keydown', function(e) {
+      if (detailModal.classList.contains('hidden')) return;
+
+      if (e.key === 'Escape') {
+        closeModal();
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        prevItem();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        nextItem();
+      }
+    });
+
+    function formatDuration(sec) {
+      if (!sec || sec <= 0) return '';
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      if (m >= 60) {
+        const h = Math.floor(m / 60);
+        const remM = m % 60;
+        return String(h) + ':' + String(remM).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+      }
+      return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    }
+
+    function formatResolution(w, h) {
+      if (!w || !h || w <= 0 || h <= 0) return '未知解析度';
+      let tag = '';
+      if (w >= 3840 || h >= 3840) tag = ' (4K UHD)';
+      else if ((w >= 1920 && h >= 1080) || (w >= 1080 && h >= 1920)) tag = ' (1080p)';
+      else if ((w >= 1280 && h >= 720) || (w >= 720 && h >= 1280)) tag = ' (720p)';
+      const mp = (w * h / 1000000).toFixed(1);
+      return w + ' × ' + h + ' (' + mp + ' MP)' + tag;
+    }
+
     async function loadPhotos() {
       const params = new URLSearchParams({
         q: qInput.value,
         type: typeSelect.value,
         date_from: dateFrom.value,
         date_to: dateTo.value,
-        limit: '240'
+        limit: '500'
       });
       const res = await fetch('/api/photos?' + params.toString());
       const data = await res.json();
-      const items = data.items || [];
-      statsText.textContent = '符合條件: ' + data.total + ' 張 (點擊直接開啟 Google Photos 雲端原圖)';
+      currentItems = data.items || [];
+      statsText.textContent = '符合條件: ' + data.total + ' 筆項目 (點擊卡片檢視詳情與複製連結)';
 
-      if (items.length === 0) {
-        grid.innerHTML = '<div class="col-span-full text-center py-20 text-slate-500">找不到符合條件的相片，請先執行 sync 或調整過濾條件。</div>';
+      if (currentItems.length === 0) {
+        timelineContainer.innerHTML = '<div class="text-center py-20 text-slate-500">找不到符合條件的項目，請先執行 sync 或調整過濾條件。</div>';
+        document.getElementById('timelineScrubber').classList.add('hidden');
         return;
       }
 
-      grid.innerHTML = items.map(function(it) {
-        const dateStr = it.taken_at ? new Date(it.taken_at * 1000).toISOString().slice(0, 10) : '未知日期';
-        const thumbSrc = it.thumb_path ? ('/' + it.thumb_path) : '';
-        const label = it.filename || it.description || it.id.slice(0, 12);
-        const isVideo = it.media_type === 'video' || (it.filename && /\.(mp4|mov|mkv|webm|m4v|3gp|avi)$/i.test(it.filename));
-        const videoBadge = isVideo
-          ? '<div class="absolute top-2 right-2 bg-black/60 backdrop-blur rounded px-1.5 py-0.5 text-[10px] text-white flex items-center gap-1 font-semibold z-10"><span>▶</span><span>VIDEO</span></div>'
-          : '';
-        const mediaHtml = thumbSrc
-          ? '<img src="' + thumbSrc + '" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition duration-200" />'
-          : '<div class="w-full h-full flex items-center justify-center text-xs text-slate-600 p-2 text-center">' + label + '</div>';
+      // 依年月進行分組 (如 2026 年 10 月)
+      const groups = {};
+      currentItems.forEach(function(it, idx) {
+        let label = '未知時間';
+        let year = '';
+        if (it.taken_at > 0) {
+          const d = new Date(it.taken_at * 1000);
+          year = String(d.getFullYear());
+          const m = d.getMonth() + 1;
+          label = year + ' 年 ' + m + ' 月';
+        }
+        if (!groups[label]) {
+          groups[label] = { label: label, year: year, items: [] };
+        }
+        groups[label].items.push({ it: it, globalIndex: idx });
+      });
 
-        return '<a href="' + it.product_url + '" target="_blank" rel="noopener noreferrer" ' +
-               'class="group relative aspect-square bg-slate-900 rounded-lg overflow-hidden border border-slate-800 hover:border-sky-500 transition">' +
-               videoBadge +
-               mediaHtml +
-               '<div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent p-2 text-[11px] leading-tight">' +
-                 '<div class="font-medium text-slate-100 truncate">' + label + '</div>' +
-                 '<div class="text-slate-400 flex justify-between mt-0.5">' +
-                   '<span>' + dateStr + '</span>' +
-                   '<span>' + (it.camera_model || '') + '</span>' +
+      // 渲染年月分組區塊
+      const groupKeys = Object.keys(groups);
+      timelineContainer.innerHTML = groupKeys.map(function(key) {
+        const grp = groups[key];
+        const safeId = 'sec-' + encodeURIComponent(key);
+
+        const cardsHtml = grp.items.map(function(entry) {
+          const it = entry.it;
+          const idx = entry.globalIndex;
+          const dateStr = it.taken_at ? new Date(it.taken_at * 1000).toISOString().slice(0, 10) : '未知日期';
+          const thumbSrc = it.thumb_path ? ('/' + it.thumb_path) : '';
+          const label = it.filename || (it.id ? it.id.slice(0, 12) + '...' : '未命名');
+          const isVideo = it.media_type === 'video' || (it.filename && /\.(mp4|mov|mkv|webm|m4v|3gp|avi)$/i.test(it.filename));
+          const durStr = formatDuration(it.duration);
+
+          const videoBadge = isVideo
+            ? '<div class="absolute top-2 right-2 bg-black/70 backdrop-blur rounded px-1.5 py-0.5 text-[10px] text-white flex items-center gap-1 font-semibold z-10"><span>▶</span><span>VIDEO</span></div>'
+            : '';
+
+          const durationBadge = (isVideo && durStr)
+            ? '<div class="absolute bottom-11 right-2 bg-black/75 backdrop-blur rounded px-1.5 py-0.5 text-[10px] text-slate-200 font-mono z-10">' + durStr + '</div>'
+            : '';
+
+          const playOverlay = isVideo
+            ? '<div class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-80 group-hover:opacity-100 transition"><div class="w-10 h-10 rounded-full bg-black/50 backdrop-blur flex items-center justify-center text-white text-base">▶</div></div>'
+            : '';
+
+          const mediaHtml = thumbSrc
+            ? '<img src="' + thumbSrc + '" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition duration-200" />'
+            : '<div class="w-full h-full flex items-center justify-center text-xs text-slate-600 p-2 text-center">' + label + '</div>';
+
+          return '<div onclick="openModal(' + idx + ')" ' +
+                 'class="group relative aspect-square bg-slate-900 rounded-lg overflow-hidden border border-slate-800 hover:border-sky-500 cursor-pointer transition shadow hover:shadow-sky-500/10">' +
+                 videoBadge +
+                 durationBadge +
+                 playOverlay +
+                 mediaHtml +
+                 '<div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-2 text-[11px] leading-tight z-10">' +
+                   '<div class="font-medium text-slate-100 truncate" title="' + (it.filename || it.id) + '">' + label + '</div>' +
+                   '<div class="text-slate-400 flex justify-between mt-0.5">' +
+                     '<span>' + dateStr + '</span>' +
+                     '<span>' + (it.width ? (it.width + 'p') : '') + '</span>' +
+                   '</div>' +
                  '</div>' +
-               '</div>' +
-               '</a>';
+                 '</div>';
+        }).join('');
+
+        return '<section id="' + safeId + '" class="timeline-section" data-label="' + grp.label + '" data-year="' + grp.year + '">' +
+               '  <div class="sticky z-20 py-2.5 px-1 bg-slate-950/95 backdrop-blur flex items-baseline gap-2.5 mb-2.5 border-b border-slate-900/80 transition-[top] duration-300 ease-in-out" style="top: var(--header-offset, 52px);">' +
+               '    <h2 class="text-sm sm:text-base font-bold text-slate-200 tracking-tight">' + grp.label + '</h2>' +
+               '    <span class="text-xs text-slate-500 font-medium">' + grp.items.length + ' 筆</span>' +
+               '  </div>' +
+               '  <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">' +
+               cardsHtml +
+               '  </div>' +
+               '</section>';
       }).join('');
+
+      renderTimelineScrubber(groups);
+      updateHeaderOffset();
+    }
+
+    // 渲染右側時間軸軌道 (Timeline Scrubber)
+    function renderTimelineScrubber(groups) {
+      const scrubberRail = document.getElementById('scrubberRail');
+      const scrubberContainer = document.getElementById('timelineScrubber');
+      if (!scrubberRail || !scrubberContainer) return;
+
+      const groupKeys = Object.keys(groups);
+      if (groupKeys.length <= 1) {
+        scrubberContainer.classList.add('hidden');
+        return;
+      }
+      scrubberContainer.classList.remove('hidden');
+
+      // 提取所有唯一年份
+      const yearsMap = {};
+      groupKeys.forEach(function(k) {
+        const yr = groups[k].year;
+        if (yr) {
+          if (!yearsMap[yr]) yearsMap[yr] = [];
+          yearsMap[yr].push(groups[k]);
+        }
+      });
+
+      const uniqueYears = Object.keys(yearsMap).sort(function(a, b) { return b - a; });
+
+      let html = '';
+      if (uniqueYears.length > 1) {
+        // 多個年份時：顯示年份清單
+        html = uniqueYears.map(function(yr) {
+          const firstSectionId = 'sec-' + encodeURIComponent(yearsMap[yr][0].label);
+          return '<button onclick="scrollToSection(\'' + firstSectionId + '\')" data-target-year="' + yr + '" ' +
+                 'class="scrubber-item text-[11px] font-semibold text-slate-400 hover:text-sky-300 hover:scale-110 px-1 py-0.5 transition cursor-pointer" title="' + yr + ' 年">' +
+                 yr +
+                 '</button>';
+        }).join('');
+      } else {
+        // 單一年份時：顯示月份清單
+        html = groupKeys.map(function(k) {
+          const safeId = 'sec-' + encodeURIComponent(k);
+          const monthText = k.replace(/^\d+\s*年\s*/, '');
+          return '<button onclick="scrollToSection(\'' + safeId + '\')" data-target-label="' + k + '" ' +
+                 'class="scrubber-item text-[11px] font-semibold text-slate-400 hover:text-sky-300 hover:scale-110 px-1 py-0.5 transition cursor-pointer" title="' + k + '">' +
+                 (monthText || k) +
+                 '</button>';
+        }).join('');
+      }
+
+      scrubberRail.innerHTML = html;
+    }
+
+    function scrollToSection(secId) {
+      const el = document.getElementById(secId);
+      if (el) {
+        const isNavbarVisible = !mainHeader.classList.contains('-translate-y-full');
+        const offset = isNavbarVisible ? (mainHeader.offsetHeight || 52) + 6 : 6;
+        const y = el.getBoundingClientRect().top + window.pageYOffset - offset;
+        window.scrollTo({ top: y, behavior: 'smooth' });
+      }
+    }
+
+    let scrubberFadeTimer = null;
+    function updateTimelineScrubberOnScroll() {
+      const sections = document.querySelectorAll('.timeline-section');
+      if (!sections.length) return;
+
+      let activeSection = null;
+      const scrollPosition = window.scrollY + 100;
+
+      for (let i = 0; i < sections.length; i++) {
+        const sec = sections[i];
+        const top = sec.offsetTop;
+        const bottom = top + sec.offsetHeight;
+        if (scrollPosition >= top && scrollPosition <= bottom) {
+          activeSection = sec;
+          break;
+        }
+      }
+
+      if (!activeSection && sections.length > 0) {
+        if (window.scrollY < sections[0].offsetTop) {
+          activeSection = sections[0];
+        } else {
+          activeSection = sections[sections.length - 1];
+        }
+      }
+
+      if (activeSection) {
+        const label = activeSection.getAttribute('data-label') || '';
+        const year = activeSection.getAttribute('data-year') || '';
+
+        // 顯示懸浮年月指示 Pill
+        const pill = document.getElementById('scrubberPill');
+        if (pill && label) {
+          pill.textContent = label;
+          pill.classList.remove('opacity-0');
+          clearTimeout(scrubberFadeTimer);
+          scrubberFadeTimer = setTimeout(function() {
+            pill.classList.add('opacity-0');
+          }, 1300);
+        }
+
+        // 高亮對應軌道上的按鈕
+        document.querySelectorAll('.scrubber-item').forEach(function(el) {
+          if (el.getAttribute('data-target-year') === year || el.getAttribute('data-target-label') === label) {
+            el.classList.add('text-sky-400', 'font-bold', 'scale-110');
+            el.classList.remove('text-slate-400');
+          } else {
+            el.classList.remove('text-sky-400', 'font-bold', 'scale-110');
+            el.classList.add('text-slate-400');
+          }
+        });
+      }
+    }
+
+    function openModal(idx) {
+      if (idx < 0 || idx >= currentItems.length) return;
+      currentModalIndex = idx;
+      const it = currentItems[idx];
+      currentModalItem = it;
+
+      const isVideo = it.media_type === 'video' || (it.filename && /\.(mp4|mov|mkv|webm|m4v|3gp|avi)$/i.test(it.filename));
+      const durStr = formatDuration(it.duration);
+
+      // Header
+      const typeBadge = document.getElementById('modalTypeBadge');
+      typeBadge.textContent = isVideo ? '▶ 影片 VIDEO' : '📷 相片 PHOTO';
+      typeBadge.className = isVideo ? 'text-xs px-2 py-0.5 rounded font-bold uppercase bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0'
+                                    : 'text-xs px-2 py-0.5 rounded font-bold uppercase bg-sky-500/20 text-sky-300 border border-sky-500/30 shrink-0';
+
+      document.getElementById('modalTitle').textContent = it.filename || ('項目 ID: ' + it.id);
+      document.getElementById('modalCounter').textContent = (idx + 1) + ' / ' + currentItems.length;
+
+      // 更新上下一張箭頭按鈕狀態
+      document.getElementById('prevBtn').disabled = (idx <= 0);
+      document.getElementById('nextBtn').disabled = (idx >= currentItems.length - 1);
+
+      // Thumbnail
+      const thumb = document.getElementById('modalThumb');
+      thumb.src = it.thumb_path ? ('/' + it.thumb_path) : '';
+
+      const thumbBadge = document.getElementById('modalThumbBadge');
+      if (isVideo && durStr) {
+        thumbBadge.textContent = '長度 ' + durStr;
+        thumbBadge.classList.remove('hidden');
+      } else {
+        thumbBadge.classList.add('hidden');
+      }
+
+      // Metadata Grid
+      document.getElementById('modalFilename').textContent = it.filename || '未補齊 (可執行 gphotos-indexer sync -fetch-details 補齊)';
+      if (!it.filename) {
+        document.getElementById('modalFilename').className = 'text-slate-400 italic font-mono text-xs';
+      } else {
+        document.getElementById('modalFilename').className = 'text-slate-200 font-mono font-medium break-all select-all';
+      }
+
+      const dateStr = it.taken_at ? new Date(it.taken_at * 1000).toLocaleString('zh-TW', { hour12: false }) : '未知拍攝時間';
+      document.getElementById('modalTakenAt').textContent = dateStr;
+
+      document.getElementById('modalDuration').textContent = isVideo ? (durStr ? (durStr + ' (' + it.duration + ' 秒)') : '未知長度') : '非影片 (無長度資訊)';
+      document.getElementById('modalResolution').textContent = formatResolution(it.width, it.height);
+      document.getElementById('modalCamera').textContent = it.camera_model || it.camera_make || '無相機/來源資訊';
+      document.getElementById('modalUrl').textContent = it.product_url;
+
+      // 重設複製按鈕狀態
+      resetCopyBtn();
+
+      detailModal.classList.remove('hidden');
+    }
+
+    function prevItem(e) {
+      if (e) e.stopPropagation();
+      if (currentModalIndex > 0) {
+        openModal(currentModalIndex - 1);
+      }
+    }
+
+    function nextItem(e) {
+      if (e) e.stopPropagation();
+      if (currentModalIndex < currentItems.length - 1) {
+        openModal(currentModalIndex + 1);
+      }
+    }
+
+    function closeModal() {
+      detailModal.classList.add('hidden');
+      currentModalIndex = -1;
+      currentModalItem = null;
+    }
+
+    function closeModalOnBackdrop(e) {
+      if (e.target === detailModal) {
+        closeModal();
+      }
+    }
+
+    function openGooglePhotos() {
+      if (currentModalItem && currentModalItem.product_url) {
+        window.open(currentModalItem.product_url, '_blank', 'noopener,noreferrer');
+      }
+    }
+
+    let copyTimer = null;
+    function resetCopyBtn() {
+      clearTimeout(copyTimer);
+      const copyBtn = document.getElementById('copyBtn');
+      const copyIcon = document.getElementById('copyIcon');
+      const copyText = document.getElementById('copyText');
+      copyBtn.className = 'px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 transition';
+      copyIcon.textContent = '📋';
+      copyText.textContent = '複製連結';
+    }
+
+    function copyLink() {
+      if (!currentModalItem || !currentModalItem.product_url) return;
+      const url = currentModalItem.product_url;
+
+      const onSuccess = function() {
+        const copyBtn = document.getElementById('copyBtn');
+        const copyIcon = document.getElementById('copyIcon');
+        const copyText = document.getElementById('copyText');
+        copyBtn.className = 'px-3.5 py-1.5 rounded-lg bg-emerald-600/30 border border-emerald-500/50 text-emerald-300 text-xs font-medium flex items-center gap-1.5 transition';
+        copyIcon.textContent = '✅';
+        copyText.textContent = '已複製連結！';
+        clearTimeout(copyTimer);
+        copyTimer = setTimeout(resetCopyBtn, 2200);
+      };
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(onSuccess).catch(function() {
+          fallbackCopy(url, onSuccess);
+        });
+      } else {
+        fallbackCopy(url, onSuccess);
+      }
+    }
+
+    function fallbackCopy(text, cb) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        if (cb) cb();
+      } catch (err) {
+        alert('複製失敗，請手動複製連結: ' + text);
+      }
+      document.body.removeChild(ta);
     }
 
     loadPhotos();

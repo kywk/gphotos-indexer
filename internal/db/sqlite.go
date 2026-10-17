@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ type MediaItem struct {
 	TakenAt      int64   `json:"taken_at"`
 	Width        int     `json:"width"`
 	Height       int     `json:"height"`
+	Duration     int     `json:"duration"`
 	CameraMake   string  `json:"camera_make"`
 	CameraModel  string  `json:"camera_model"`
 	FocalLength  float64 `json:"focal_length"`
@@ -75,6 +77,7 @@ func (s *Store) migrate() error {
 		"taken_at INTEGER DEFAULT 0, " +
 		"width INTEGER DEFAULT 0, " +
 		"height INTEGER DEFAULT 0, " +
+		"duration INTEGER DEFAULT 0, " +
 		"camera_make TEXT DEFAULT '', " +
 		"camera_model TEXT DEFAULT '', " +
 		"focal_length REAL DEFAULT 0, " +
@@ -93,8 +96,58 @@ func (s *Store) migrate() error {
 		"CREATE VIRTUAL TABLE IF NOT EXISTS media_fts USING fts5(" +
 		"id UNINDEXED, filename, description, camera_make, camera_model, location_name, tokenize = 'unicode61'" +
 		");"
-	_, err := s.db.Exec(schema)
-	return err
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+
+	// 確保舊版本資料庫升級加入 duration 欄位
+	_, _ = s.db.Exec("ALTER TABLE media_items ADD COLUMN duration INTEGER DEFAULT 0;")
+
+	// 自動為舊資料從 raw_metadata 中補齊影片時長
+	rows, err := s.db.Query("SELECT id, raw_metadata FROM media_items WHERE duration = 0 AND raw_metadata LIKE '%76647426%'")
+	if err == nil {
+		type backfillItem struct {
+			id       string
+			duration int
+		}
+		var toUpdate []backfillItem
+		for rows.Next() {
+			var id, raw string
+			if err := rows.Scan(&id, &raw); err == nil && raw != "" {
+				var data []any
+				if err := json.Unmarshal([]byte(raw), &data); err == nil && len(data) > 9 {
+					if metaMap, ok := data[9].(map[string]any); ok {
+						if ext, ok := metaMap["76647426"].([]any); ok && len(ext) > 0 {
+							if dFloat, ok := ext[0].(float64); ok && dFloat > 0 {
+								sec := int(dFloat) / 1000
+								if sec == 0 && dFloat > 0 {
+									sec = 1
+								}
+								toUpdate = append(toUpdate, backfillItem{id: id, duration: sec})
+							}
+						}
+					}
+				}
+			}
+		}
+		rows.Close()
+
+		if len(toUpdate) > 0 {
+			tx, err := s.db.Begin()
+			if err == nil {
+				stmt, err := tx.Prepare("UPDATE media_items SET duration = ? WHERE id = ?")
+				if err == nil {
+					for _, it := range toUpdate {
+						_, _ = stmt.Exec(it.duration, it.id)
+					}
+					_ = stmt.Close()
+				}
+				_ = tx.Commit()
+			}
+		}
+	}
+
+	return nil
 }
 
 func (s *Store) Upsert(item MediaItem) error {
@@ -114,10 +167,10 @@ func (s *Store) Upsert(item MediaItem) error {
 
 	query := "INSERT INTO media_items (" +
 		"id, product_url, base_url, thumb_path, filename, description, media_type, " +
-		"taken_at, width, height, camera_make, camera_model, focal_length, aperture, " +
+		"taken_at, width, height, duration, camera_make, camera_model, focal_length, aperture, " +
 		"iso, shutter_speed, latitude, longitude, location_name, raw_metadata, " +
 		"created_at, updated_at" +
-		") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+		") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
 		"ON CONFLICT(id) DO UPDATE SET " +
 		"base_url      = CASE WHEN excluded.base_url != '' THEN excluded.base_url ELSE media_items.base_url END, " +
 		"thumb_path    = CASE WHEN excluded.thumb_path != '' THEN excluded.thumb_path ELSE media_items.thumb_path END, " +
@@ -127,6 +180,7 @@ func (s *Store) Upsert(item MediaItem) error {
 		"taken_at      = CASE WHEN excluded.taken_at > 0 THEN excluded.taken_at ELSE media_items.taken_at END, " +
 		"width         = CASE WHEN excluded.width > 0 THEN excluded.width ELSE media_items.width END, " +
 		"height        = CASE WHEN excluded.height > 0 THEN excluded.height ELSE media_items.height END, " +
+		"duration      = CASE WHEN excluded.duration > 0 THEN excluded.duration ELSE media_items.duration END, " +
 		"camera_make   = CASE WHEN excluded.camera_make != '' THEN excluded.camera_make ELSE media_items.camera_make END, " +
 		"camera_model  = CASE WHEN excluded.camera_model != '' THEN excluded.camera_model ELSE media_items.camera_model END, " +
 		"focal_length  = CASE WHEN excluded.focal_length > 0 THEN excluded.focal_length ELSE media_items.focal_length END, " +
@@ -141,7 +195,7 @@ func (s *Store) Upsert(item MediaItem) error {
 
 	_, err = tx.Exec(query,
 		item.ID, item.ProductURL, item.BaseURL, item.ThumbPath, item.Filename, item.Description, item.MediaType,
-		item.TakenAt, item.Width, item.Height, item.CameraMake, item.CameraModel, item.FocalLength, item.Aperture,
+		item.TakenAt, item.Width, item.Height, item.Duration, item.CameraMake, item.CameraModel, item.FocalLength, item.Aperture,
 		item.ISO, item.ShutterSpeed, item.Latitude, item.Longitude, item.LocationName, item.RawMetadata,
 		now, now,
 	)
@@ -222,7 +276,7 @@ func (s *Store) Search(f SearchFilter) ([]MediaItem, int, error) {
 
 	querySQL := fmt.Sprintf(
 		"SELECT id, product_url, base_url, thumb_path, filename, description, media_type, "+
-			"taken_at, width, height, camera_make, camera_model, focal_length, aperture, "+
+			"taken_at, width, height, duration, camera_make, camera_model, focal_length, aperture, "+
 			"iso, shutter_speed, latitude, longitude, location_name "+
 			"FROM media_items m %s ORDER BY m.taken_at DESC, m.created_at DESC LIMIT ? OFFSET ?",
 		whereClause,
@@ -240,7 +294,7 @@ func (s *Store) Search(f SearchFilter) ([]MediaItem, int, error) {
 		var it MediaItem
 		if err := rows.Scan(
 			&it.ID, &it.ProductURL, &it.BaseURL, &it.ThumbPath, &it.Filename, &it.Description, &it.MediaType,
-			&it.TakenAt, &it.Width, &it.Height, &it.CameraMake, &it.CameraModel, &it.FocalLength, &it.Aperture,
+			&it.TakenAt, &it.Width, &it.Height, &it.Duration, &it.CameraMake, &it.CameraModel, &it.FocalLength, &it.Aperture,
 			&it.ISO, &it.ShutterSpeed, &it.Latitude, &it.Longitude, &it.LocationName,
 		); err != nil {
 			return nil, 0, err

@@ -352,44 +352,70 @@ func (r *Runner) enrichDetailsViaUI(ctx context.Context) {
 	)
 
 	limit := r.cfg.MaxItems
-	if limit > 50 {
-		limit = 50
+	if limit <= 0 {
+		limit = 200
 	}
 
-	jsFilename := "(() => {" +
-		"const labels = Array.from(document.querySelectorAll('[aria-label]')).map(el => el.getAttribute('aria-label'));" +
-		"const fn = labels.find(l => l && (l.startsWith('Filename:') || l.startsWith('檔案名稱：'))) || '';" +
-		"return fn.replace(/^(Filename:|檔案名稱：)\\s*/, '');" +
-		"})()"
+	jsExtract := `(() => {
+		const info = { filename: '', camera: '', width: 0, height: 0 };
+		const labels = Array.from(document.querySelectorAll('[aria-label]')).map(el => el.getAttribute('aria-label')).filter(Boolean);
 
-	jsCamera := "(() => {" +
-		"const labels = Array.from(document.querySelectorAll('[aria-label]')).map(el => el.getAttribute('aria-label'));" +
-		"const cam = labels.find(l => l && (l.startsWith('Camera:') || l.startsWith('相機：'))) || '';" +
-		"return cam.replace(/^(Camera:|相機：)\\s*/, '');" +
-		"})()"
+		for (const l of labels) {
+			const fnMatch = l.match(/^(?:Filename|檔案名稱|文件名|檔名)\s*[:：]\s*(.+)/i);
+			if (fnMatch && !info.filename) info.filename = fnMatch[1].trim();
+
+			const camMatch = l.match(/^(?:Camera|相機|設備)\s*[:：]\s*(.+)/i);
+			if (camMatch && !info.camera) info.camera = camMatch[1].trim();
+
+			const sizeMatch = l.match(/(?:Size|尺寸|大小)?\s*[:：]?\s*(\d+)\s*[×x]\s*(\d+)\s*(?:pixels|像素)?/i);
+			if (sizeMatch && !info.width) {
+				info.width = parseInt(sizeMatch[1], 10);
+				info.height = parseInt(sizeMatch[2], 10);
+			}
+		}
+
+		if (!info.filename) {
+			const reFile = /([^\s/\\:*?"<>|]+\.(mp4|mov|mkv|webm|m4v|3gp|avi|jpg|jpeg|png|heic|webp))/i;
+			const m = document.body.innerText.match(reFile);
+			if (m) info.filename = m[1].trim();
+		}
+
+		return JSON.stringify(info);
+	})()`
+
+	type detailResult struct {
+		Filename string `json:"filename"`
+		Camera   string `json:"camera"`
+		Width    int    `json:"width"`
+		Height   int    `json:"height"`
+	}
 
 	for i := 0; i < limit; i++ {
-		var currentURL, filename, camera string
+		var currentURL, rawJSON string
 		_ = chromedp.Run(ctx,
 			chromedp.Location(&currentURL),
-			chromedp.Evaluate(jsFilename, &filename),
-			chromedp.Evaluate(jsCamera, &camera),
+			chromedp.Evaluate(jsExtract, &rawJSON),
 		)
+
+		var res detailResult
+		_ = json.Unmarshal([]byte(rawJSON), &res)
 
 		if idx := strings.Index(currentURL, "/photo/"); idx != -1 {
 			id := strings.TrimPrefix(currentURL[idx:], "/photo/")
 			if qIdx := strings.Index(id, "?"); qIdx != -1 {
 				id = id[:qIdx]
 			}
-			if reMediaKey.MatchString(id) && (filename != "" || camera != "") {
-				mediaType := "photo"
-				if isVideoFilename(filename) {
+			if reMediaKey.MatchString(id) && (res.Filename != "" || res.Camera != "" || res.Width > 0) {
+				mediaType := ""
+				if isVideoFilename(res.Filename) {
 					mediaType = "video"
 				}
 				_ = r.store.Upsert(db.MediaItem{
 					ID:          id,
-					Filename:    filename,
-					CameraModel: camera,
+					Filename:    res.Filename,
+					CameraModel: res.Camera,
+					Width:       res.Width,
+					Height:      res.Height,
 					MediaType:   mediaType,
 				})
 			}

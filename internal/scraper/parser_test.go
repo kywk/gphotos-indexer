@@ -84,7 +84,7 @@ func TestParseBatchExecute(t *testing.T) {
 }
 
 func TestParseBatchExecute_InitDataCallback(t *testing.T) {
-	scriptPayload := `AF_initDataCallback({key: 'ds:8', hash: '9', data:[[["AF1QipMockInitVideo0004",["https://photos.fife.usercontent.google.com/pw/AP1GczInitUrl",1080,1920],1792090318000,null,null,null,null,null,null,{"76647426":[1080,1920]}]]]});`
+	scriptPayload := `AF_initDataCallback({key: 'ds:8', hash: '9', data:[[["AF1QipMockInitVideo0004",["https://photos.fife.usercontent.google.com/pw/AP1GczInitUrl",1080,1920],1792090318000,null,null,null,null,null,null,{"76647426":[217961,null,1080,1920]}]]]});`
 	items := ParseBatchExecute(scriptPayload)
 	if len(items) != 1 {
 		t.Fatalf("預期解析出 1 筆項目，實際為 %d", len(items))
@@ -104,6 +104,9 @@ func TestParseBatchExecute_InitDataCallback(t *testing.T) {
 	}
 	if it.MediaType != "video" {
 		t.Errorf("媒體類型應為 video，實際為 %s", it.MediaType)
+	}
+	if it.Duration != 217 {
+		t.Errorf("影片長度解析錯誤: 預期 217 秒, 實際為 %d", it.Duration)
 	}
 }
 

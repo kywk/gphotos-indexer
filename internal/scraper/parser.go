@@ -185,7 +185,26 @@ func scanSubtree(node any, item *db.MediaItem) {
 			scanSubtree(child, item)
 		}
 	case map[string]any:
-		if _, ok := v["76647426"]; ok {
+		if vArr, ok := v["76647426"].([]any); ok {
+			item.MediaType = "video"
+			if len(vArr) > 0 {
+				if durMs, ok := toInt(vArr[0]); ok && durMs > 0 {
+					sec := durMs / 1000
+					if sec == 0 && durMs > 0 {
+						sec = 1
+					}
+					item.Duration = sec
+				}
+			}
+			if len(vArr) > 3 {
+				if w, ok := toInt(vArr[2]); ok && w > 0 {
+					item.Width = w
+				}
+				if h, ok := toInt(vArr[3]); ok && h > 0 {
+					item.Height = h
+				}
+			}
+		} else if _, ok := v["76647426"]; ok {
 			item.MediaType = "video"
 		}
 		for _, child := range v {

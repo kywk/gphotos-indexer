@@ -6,7 +6,8 @@
 
     gphotos-indexer/
     ├── AGENTS.md                        # Antigravity / AI Agent 開發行為準則與防回歸鐵律
-    ├── SPEC.md                          # 系統規格書 (DB Schema、RPC 解析、測試不變量)
+    ├── SPEC.md                          # 系統規格書 (架構設計、RPC 解析、測試不變量)
+    ├── DATABASE.md                      # 本地資料庫規格書 (專供 Agent 讀寫分析之 Schema 與指南)
     ├── README.md                        # 快速上手與 CLI 參數說明
     ├── CHANGELOG.md                     # 版本演進紀錄
     ├── Makefile                         # 編譯、測試 (make check) 與常用指令

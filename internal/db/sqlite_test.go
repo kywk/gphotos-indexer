@@ -22,7 +22,7 @@ func TestStore_UpsertPreservesNonEmptyFields(t *testing.T) {
 	store := newTestStore(t)
 	id := "AF1QipTestMerge000001"
 
-	// 階段 1：模擬從時間軸列表抓到縮圖、拍攝時間與解析度（此時沒有檔名與 EXIF）
+	// 階段 1：模擬從時間軸列表抓到縮圖、拍攝時間、解析度與影片時長（此時沒有檔名與 EXIF）
 	stage1 := MediaItem{
 		ID:        id,
 		BaseURL:   "https://lh3.googleusercontent.com/pw/AP1GczStage1",
@@ -30,7 +30,8 @@ func TestStore_UpsertPreservesNonEmptyFields(t *testing.T) {
 		TakenAt:   1769322730,
 		Width:     4032,
 		Height:    3024,
-		MediaType: "photo",
+		Duration:  125,
+		MediaType: "video",
 	}
 	if err := store.Upsert(stage1); err != nil {
 		t.Fatalf("Stage 1 Upsert 失敗: %v", err)
@@ -67,8 +68,8 @@ func TestStore_UpsertPreservesNonEmptyFields(t *testing.T) {
 	if got.ThumbPath != "thumbs/"+id+".webp" {
 		t.Errorf("階段 1 的 ThumbPath 被洗掉了: got %q", got.ThumbPath)
 	}
-	if got.TakenAt != 1769322730 || got.Width != 4032 {
-		t.Errorf("階段 1 的 TakenAt/Width 被洗掉了: TakenAt=%d, Width=%d", got.TakenAt, got.Width)
+	if got.TakenAt != 1769322730 || got.Width != 4032 || got.Duration != 125 {
+		t.Errorf("階段 1 的 TakenAt/Width/Duration 被洗掉了: TakenAt=%d, Width=%d, Duration=%d", got.TakenAt, got.Width, got.Duration)
 	}
 	if got.Filename != "IMG_20260125_Kanas.HEIC" {
 		t.Errorf("階段 2 的 Filename 未寫入: got %q", got.Filename)
@@ -97,6 +98,7 @@ func TestStore_SearchFilters(t *testing.T) {
 			LocationName: "禾木村",
 			Description:  "滑雪影片",
 			MediaType:    "video",
+			Duration:     85,
 			TakenAt:      1769904000, // 2026-02-01
 		},
 	}

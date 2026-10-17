@@ -36,6 +36,7 @@
 - taken_at (INTEGER): 拍攝時間 Unix Timestamp (秒)
 - width (INTEGER): 原始寬度 (px)
 - height (INTEGER): 原始高度 (px)
+- duration (INTEGER): 影片長度 (秒，相片為 0)
 - camera_make (TEXT): 相機製造商
 - camera_model (TEXT): 相機型號
 - focal_length (REAL): 焦距
@@ -48,6 +49,7 @@
 - raw_metadata (TEXT): 原始擷取 JSON 備份
 - created_at (INTEGER): 本地入庫時間
 - updated_at (INTEGER): 本地最後更新時間
+*(詳細資料庫規格、FTS5 檢索與 AI Agent 回寫指南請參閱 [DATABASE.md](DATABASE.md))*
 
 ### 3.2 兩階段非破壞性 Upsert 規格 (Two-Phase Non-Destructive Upsert)
 由於 Google Photos 的「時間軸列表封包」與「單張詳情封包」是分開載入的：
