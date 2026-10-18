@@ -15,10 +15,18 @@ import (
 	"github.com/local/gphotos-indexer/internal/server"
 )
 
+const Version = "v0.2.0"
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
+	}
+
+	subcmd := os.Args[1]
+	if subcmd == "version" || subcmd == "-v" || subcmd == "--version" {
+		fmt.Printf("gphotos-indexer %s\n", Version)
+		return
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -29,7 +37,6 @@ func main() {
 		stop() // 恢復預設信號行為，若用戶再次按下 Ctrl+C 則強制退出
 	}()
 
-	subcmd := os.Args[1]
 	switch subcmd {
 	case "auth":
 		fs := flag.NewFlagSet("auth", flag.ExitOnError)
@@ -101,7 +108,7 @@ func mustOpenDB(dataDir string) *db.Store {
 }
 
 func printUsage() {
-	fmt.Println("gphotos-indexer v0.1.0 — Google Photos 本地縮圖與極速檢索工具")
+	fmt.Printf("gphotos-indexer %s — Google Photos 本地縮圖與極速檢索工具\n", Version)
 	fmt.Println("")
 	fmt.Println("用法:")
 	fmt.Println("  gphotos-indexer <command> [flags]")
@@ -110,4 +117,5 @@ func printUsage() {
 	fmt.Println("  auth    啟動有頭 Chrome 視窗完成 Google 帳號登入並保存 Session")
 	fmt.Println("  sync    攔截 batchexecute 與 DOM，自動抓取 WebP 縮圖與 Metadata 存入 SQLite")
 	fmt.Println("  serve   啟動本地極速搜尋 Web UI (點擊直接跳轉 Google Photos 雲端原圖)")
+	fmt.Println("  version 顯示版本資訊")
 }
