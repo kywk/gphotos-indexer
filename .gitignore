@@ -1,5 +1,6 @@
 # 編譯產物與測試覆蓋率
 /bin/
+/dist/
 /gphotos-indexer
 *.exe
 *.dll

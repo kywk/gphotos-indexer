@@ -1,4 +1,4 @@
-# gphotos-indexer (v0.1.0)
+# gphotos-indexer (v0.2.0)
 
 針對 Google Photos 2025 API 權限收緊後的本地端輕量檢索方案。透過 Headless Browser (chromedp) 掛載本地授權 Session，自動攔截 Google Photos 網頁版內部 batchexecute RPC 封包與 DOM，抓取原生 WebP 縮圖（w300-h300-c-rw，單張約 10KB）與相片 Metadata（ID、拍攝時間、解析度、檔名、EXIF、GPS），存入本地 SQLite (FTS5)，並提供零延遲的本地搜尋 Web 介面，點擊後直接 Deep Link 跳轉回 Google Photos 檢視原圖。
 

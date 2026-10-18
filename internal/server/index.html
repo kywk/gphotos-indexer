@@ -9,134 +9,164 @@
     :root {
       --header-offset: 52px;
     }
-    /* 隱藏滾動條但保持滾動功能 */
+    ::selection {
+      background: rgba(161, 161, 170, 0.25);
+      color: #f4f4f5;
+    }
+    /* 隱藏原生滾動條但保持滾動功能 */
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
   </style>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen">
-  <!-- 頂部導航欄 (單列不折行，向下捲動關閉，向上捲動出現) -->
-  <header id="mainHeader" class="sticky top-0 z-40 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-4 sm:px-6 py-2.5 transition-transform duration-300 ease-in-out">
+<body class="bg-zinc-950 text-zinc-100 min-h-screen antialiased selection:bg-zinc-800 selection:text-zinc-100">
+  <!-- 頂部導航欄 (單列不折行，向下捲動沉靜隱藏，向上捲動流暢出現) -->
+  <header id="mainHeader" class="sticky top-0 z-40 bg-zinc-950/90 backdrop-blur-md border-b border-zinc-800/70 px-4 sm:px-6 py-2.5 transition-transform duration-300 ease-in-out">
     <div class="max-w-7xl mx-auto flex items-center justify-between gap-3 flex-nowrap">
       <!-- 品牌標題與統計 -->
       <div class="flex items-center gap-2.5 shrink-0">
-        <span class="text-xl">⚡</span>
+        <div class="w-7 h-7 rounded-md bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-400 shrink-0">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+        </div>
         <div>
-          <h1 class="text-sm sm:text-base font-bold tracking-tight text-white leading-none">gphotos-indexer</h1>
-          <p id="statsText" class="text-[11px] text-slate-400 mt-1 leading-none truncate max-w-[130px] sm:max-w-xs md:max-w-md">正在載入索引...</p>
+          <h1 class="text-xs sm:text-sm font-medium tracking-tight text-zinc-200 leading-none">gphotos-indexer</h1>
+          <p id="statsText" class="text-[11px] text-zinc-400 mt-1 leading-none truncate max-w-[130px] sm:max-w-xs md:max-w-md">載入索引庫中...</p>
         </div>
       </div>
 
-      <!-- 搜尋與過濾條件 (強制作為單列 flex-nowrap) -->
+      <!-- 搜尋與過濾條件 (強制作為單列 flex-nowrap，優雅收斂) -->
       <div class="flex items-center gap-1.5 sm:gap-2 flex-nowrap shrink-0 overflow-x-auto no-scrollbar">
         <input id="qInput" type="text" placeholder="搜尋檔名、相機、地點..."
-          class="w-32 sm:w-44 md:w-60 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500 shrink-0" />
-        <select id="typeSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-sky-500 shrink-0">
+          class="w-32 sm:w-44 md:w-60 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500/30 rounded-md px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none transition shrink-0" />
+        <select id="typeSelect" class="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500/30 rounded-md px-2 py-1.5 text-xs text-zinc-300 focus:outline-none transition shrink-0">
           <option value="all">全部類型</option>
           <option value="photo">相片</option>
           <option value="video">影片</option>
         </select>
-        <input id="dateFrom" type="date" class="w-28 sm:w-32 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-sky-500 shrink-0" />
-        <span class="text-slate-500 text-xs shrink-0">至</span>
-        <input id="dateTo" type="date" class="w-28 sm:w-32 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-sky-500 shrink-0" />
+        <input id="dateFrom" type="date" class="w-28 sm:w-32 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500/30 rounded-md px-2 py-1.5 text-xs text-zinc-300 focus:outline-none transition shrink-0" />
+        <span class="text-zinc-400 text-xs shrink-0 select-none">至</span>
+        <input id="dateTo" type="date" class="w-28 sm:w-32 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500/30 rounded-md px-2 py-1.5 text-xs text-zinc-300 focus:outline-none transition shrink-0" />
       </div>
     </div>
   </header>
 
   <!-- 主時間軸容器 -->
   <main class="max-w-7xl mx-auto p-4 sm:p-6 pb-24">
-    <div id="timelineContainer" class="space-y-6"></div>
+    <div id="timelineContainer" class="space-y-8"></div>
   </main>
 
   <!-- 右側仿 Google Photos 快速跳轉時間軸軌道 (Timeline Scrubber) -->
   <aside id="timelineScrubber" class="hidden fixed right-2 sm:right-3.5 top-24 bottom-12 z-30 flex flex-col justify-center items-end select-none pointer-events-none transition-opacity duration-300">
     <!-- 懸浮年月指示徽章 -->
-    <div id="scrubberPill" class="pointer-events-none fixed right-14 sm:right-16 bg-slate-900/95 border border-sky-500/60 text-white font-medium text-xs px-3 py-1.5 rounded-lg shadow-2xl backdrop-blur opacity-0 transition-opacity duration-200">
+    <div id="scrubberPill" class="pointer-events-none fixed right-14 sm:right-16 bg-zinc-900/95 border border-zinc-700/80 text-zinc-200 font-medium text-xs px-3 py-1.5 rounded-lg shadow-xl backdrop-blur-md opacity-0 transition-opacity duration-200">
       2026 年 10 月
     </div>
     <!-- 縱向年/月按鈕軌道 -->
-    <div id="scrubberRail" class="pointer-events-auto bg-slate-900/85 backdrop-blur-md border border-slate-800 rounded-full py-2 px-1.5 shadow-2xl flex flex-col items-center gap-1 max-h-[75vh] overflow-y-auto no-scrollbar">
+    <div id="scrubberRail" class="pointer-events-auto bg-zinc-900/80 backdrop-blur-md border border-zinc-800/80 rounded-full py-2 px-1.5 shadow-xl flex flex-col items-center gap-1 max-h-[75vh] overflow-y-auto no-scrollbar">
       <!-- 動態插入年/月按鈕 -->
     </div>
   </aside>
 
   <!-- 照片/影片詳情 Dialog -->
-  <div id="detailModal" class="fixed inset-0 z-50 hidden bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6" onclick="closeModalOnBackdrop(event)">
+  <div id="detailModal" class="fixed inset-0 z-50 hidden bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6" onclick="closeModalOnBackdrop(event)">
     <!-- 左右快速切換箭頭 (支援點擊與鍵盤 ← →) -->
-    <button id="prevBtn" onclick="prevItem(event)" class="fixed left-2 sm:left-6 top-1/2 -translate-y-1/2 z-50 w-11 h-11 sm:w-13 sm:h-13 rounded-full bg-slate-900/85 hover:bg-slate-800 border border-slate-700/80 text-white flex items-center justify-center text-3xl pb-1 transition shadow-2xl hover:scale-110 active:scale-95 disabled:opacity-20 disabled:pointer-events-none cursor-pointer backdrop-blur-sm" title="上一張 (← 方向鍵)">
-      ‹
+    <button id="prevBtn" onclick="prevItem(event)" class="fixed left-2 sm:left-6 top-1/2 -translate-y-1/2 z-50 w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-700/60 text-zinc-300 hover:text-white flex items-center justify-center transition shadow-lg hover:scale-105 active:scale-95 disabled:opacity-20 disabled:pointer-events-none cursor-pointer backdrop-blur-sm focus:outline-none" title="上一張 (← 方向鍵)">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M15 19l-7-7 7-7" />
+      </svg>
     </button>
-    <button id="nextBtn" onclick="nextItem(event)" class="fixed right-2 sm:right-6 top-1/2 -translate-y-1/2 z-50 w-11 h-11 sm:w-13 sm:h-13 rounded-full bg-slate-900/85 hover:bg-slate-800 border border-slate-700/80 text-white flex items-center justify-center text-3xl pb-1 transition shadow-2xl hover:scale-110 active:scale-95 disabled:opacity-20 disabled:pointer-events-none cursor-pointer backdrop-blur-sm" title="下一張 (→ 方向鍵)">
-      ›
+    <button id="nextBtn" onclick="nextItem(event)" class="fixed right-2 sm:right-6 top-1/2 -translate-y-1/2 z-50 w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-700/60 text-zinc-300 hover:text-white flex items-center justify-center transition shadow-lg hover:scale-105 active:scale-95 disabled:opacity-20 disabled:pointer-events-none cursor-pointer backdrop-blur-sm focus:outline-none" title="下一張 (→ 方向鍵)">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 5l7 7-7 7" />
+      </svg>
     </button>
 
     <!-- Modal 主體視窗 -->
-    <div class="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-2xl w-full overflow-hidden shadow-2xl flex flex-col max-h-[92vh]" onclick="event.stopPropagation()">
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl max-w-2xl w-full overflow-hidden shadow-2xl flex flex-col max-h-[92vh]" onclick="event.stopPropagation()">
       <!-- Modal Header -->
-      <div class="flex items-center justify-between px-5 py-3 border-b border-slate-800 bg-slate-900/90">
+      <div class="flex items-center justify-between px-5 py-3 border-b border-zinc-800/80 bg-zinc-900/90">
         <div class="flex items-center gap-2.5 truncate flex-1 mr-3">
-          <span id="modalTypeBadge" class="text-xs px-2 py-0.5 rounded font-bold uppercase shrink-0"></span>
-          <h3 id="modalTitle" class="text-sm font-semibold truncate text-slate-200"></h3>
+          <span id="modalTypeBadge" class="text-[11px] px-2 py-0.5 rounded font-medium shrink-0"></span>
+          <h2 id="modalTitle" class="text-xs sm:text-sm font-medium truncate text-zinc-200"></h2>
         </div>
         <div class="flex items-center gap-3 shrink-0">
-          <span id="modalCounter" class="text-xs text-slate-400 font-mono"></span>
-          <button onclick="closeModal()" class="text-slate-400 hover:text-slate-100 p-1 rounded-lg hover:bg-slate-800 transition text-lg leading-none" title="關閉 (Esc)">✕</button>
+          <span id="modalCounter" class="text-xs text-zinc-400 font-mono"></span>
+          <button onclick="closeModal()" class="text-zinc-400 hover:text-zinc-100 p-1 rounded-md hover:bg-zinc-800 transition leading-none focus:outline-none" title="關閉 (Esc)">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
       </div>
 
       <!-- Modal Body -->
       <div class="p-5 overflow-y-auto space-y-4">
-        <!-- 縮圖點擊區域：點擊縮圖前往 Google Photos -->
-        <div class="relative group aspect-video sm:aspect-[16/10] bg-slate-950 rounded-xl overflow-hidden border border-slate-800 cursor-pointer flex items-center justify-center" onclick="openGooglePhotos()" title="點擊在 Google Photos 開啟此項目">
-          <img id="modalThumb" src="" class="w-full h-full object-contain group-hover:scale-[1.02] transition duration-200" alt="縮圖預覽" />
-          <div class="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2 text-white font-medium text-sm backdrop-blur-[2px]">
-            <span class="text-xl">↗</span>
-            <span>點擊縮圖前往 Google Photos 雲端檢視</span>
+        <!-- 縮圖預覽舞台：點擊前往 Google Photos -->
+        <figure class="relative group aspect-video sm:aspect-[16/10] bg-black rounded overflow-hidden cursor-pointer flex items-center justify-center m-0" onclick="openGooglePhotos()" title="點擊在 Google Photos 開啟此項目">
+          <img id="modalThumb" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" class="w-full h-full object-contain group-hover:scale-[1.01] transition duration-200" alt="縮圖預覽" />
+          <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2 text-zinc-100 font-medium text-xs backdrop-blur-[1px]">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <polyline points="15 3 21 3 21 9" />
+              <line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
+            <span>前往 Google Photos 雲端檢視</span>
           </div>
-          <div id="modalThumbBadge" class="absolute bottom-2.5 right-2.5 bg-black/75 px-2 py-0.5 rounded text-xs text-slate-200 font-mono pointer-events-none"></div>
-        </div>
+          <div id="modalThumbBadge" class="absolute bottom-2.5 right-2.5 bg-black/75 backdrop-blur px-2 py-0.5 rounded text-[11px] text-zinc-300 font-mono pointer-events-none"></div>
+        </figure>
 
-        <!-- Metadata 表格資訊 -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
-          <div class="bg-slate-800/60 p-2.5 rounded-lg border border-slate-700/50">
-            <span class="text-slate-400 block mb-0.5">原始檔名</span>
-            <span id="modalFilename" class="text-slate-200 font-mono font-medium break-all select-all"></span>
+        <!-- Metadata 定義列表 (扁平層次，去除多餘卡片巢狀) -->
+        <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 pt-2 text-xs border-t border-zinc-800/60">
+          <div>
+            <dt class="text-zinc-400 font-normal mb-0.5">原始檔名</dt>
+            <dd id="modalFilename" class="text-zinc-200 font-mono break-all select-all"></dd>
           </div>
-          <div class="bg-slate-800/60 p-2.5 rounded-lg border border-slate-700/50">
-            <span class="text-slate-400 block mb-0.5">拍攝時間</span>
-            <span id="modalTakenAt" class="text-slate-200 font-medium"></span>
+          <div>
+            <dt class="text-zinc-400 font-normal mb-0.5">拍攝時間</dt>
+            <dd id="modalTakenAt" class="text-zinc-200"></dd>
           </div>
-          <div class="bg-slate-800/60 p-2.5 rounded-lg border border-slate-700/50">
-            <span class="text-slate-400 block mb-0.5">影片長度</span>
-            <span id="modalDuration" class="text-slate-200 font-medium"></span>
+          <div>
+            <dt class="text-zinc-400 font-normal mb-0.5">影片長度</dt>
+            <dd id="modalDuration" class="text-zinc-200"></dd>
           </div>
-          <div class="bg-slate-800/60 p-2.5 rounded-lg border border-slate-700/50">
-            <span class="text-slate-400 block mb-0.5">解析度 / 尺寸</span>
-            <span id="modalResolution" class="text-slate-200 font-medium"></span>
+          <div>
+            <dt class="text-zinc-400 font-normal mb-0.5">解析度 / 尺寸</dt>
+            <dd id="modalResolution" class="text-zinc-200 font-mono"></dd>
           </div>
-          <div class="bg-slate-800/60 p-2.5 rounded-lg border border-slate-700/50 sm:col-span-2">
-            <span class="text-slate-400 block mb-0.5">相機 / 上傳來源</span>
-            <span id="modalCamera" class="text-slate-200 font-medium"></span>
+          <div class="sm:col-span-2">
+            <dt class="text-zinc-400 font-normal mb-0.5">相機 / 來源資訊</dt>
+            <dd id="modalCamera" class="text-zinc-200"></dd>
           </div>
-          <div class="bg-slate-800/60 p-2.5 rounded-lg border border-slate-700/50 sm:col-span-2">
-            <span class="text-slate-400 block mb-0.5">Google Photos 雲端連結</span>
-            <span id="modalUrl" class="text-sky-400 font-mono text-[11px] break-all select-all"></span>
+          <div class="sm:col-span-2">
+            <dt class="text-zinc-400 font-normal mb-0.5">Google Photos 雲端連結</dt>
+            <dd id="modalUrl" class="text-zinc-300 font-mono text-[11px] break-all select-all underline decoration-zinc-600 underline-offset-2"></dd>
           </div>
-        </div>
+        </dl>
       </div>
 
       <!-- Modal Footer -->
-      <div class="px-5 py-3 border-t border-slate-800 bg-slate-900/90 flex flex-wrap items-center justify-between gap-2.5">
-        <div class="text-[11px] text-slate-400">
-          💡 提示：若預設瀏覽器非登入之 Google 帳號，請點「複製連結」貼至已登入視窗。
-        </div>
+      <div class="px-5 py-3 border-t border-zinc-800/80 bg-zinc-900/90 flex flex-wrap items-center justify-between gap-2.5">
+        <p class="text-[11px] text-zinc-400">
+          若預設瀏覽器非登入之 Google 帳號，可複製連結貼至已登入視窗開啟。
+        </p>
         <div class="flex items-center gap-2">
-          <button id="copyBtn" onclick="copyLink()" class="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 transition">
-            <span id="copyIcon">📋</span>
+          <button id="copyBtn" onclick="copyLink()" class="px-3.5 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700/80 border border-zinc-700/70 text-zinc-200 text-xs font-medium flex items-center gap-1.5 transition focus:outline-none">
+            <span id="copyIcon">
+              <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+            </span>
             <span id="copyText">複製連結</span>
           </button>
-          <button onclick="openGooglePhotos()" class="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium flex items-center gap-1.5 transition">
-            <span>↗</span>
+          <button onclick="openGooglePhotos()" class="px-3.5 py-1.5 rounded-md bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-medium flex items-center gap-1.5 transition shadow-sm focus:outline-none">
+            <svg class="w-3.5 h-3.5 text-zinc-950" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <polyline points="15 3 21 3 21 9" />
+              <line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
             <span>開啟雲端項目</span>
           </button>
         </div>
@@ -238,9 +268,9 @@
     function formatResolution(w, h) {
       if (!w || !h || w <= 0 || h <= 0) return '未知解析度';
       let tag = '';
-      if (w >= 3840 || h >= 3840) tag = ' (4K UHD)';
-      else if ((w >= 1920 && h >= 1080) || (w >= 1080 && h >= 1920)) tag = ' (1080p)';
-      else if ((w >= 1280 && h >= 720) || (w >= 720 && h >= 1280)) tag = ' (720p)';
+      if (w >= 3840 || h >= 3840) tag = ' · 4K';
+      else if ((w >= 1920 && h >= 1080) || (w >= 1080 && h >= 1920)) tag = ' · 1080p';
+      else if ((w >= 1280 && h >= 720) || (w >= 720 && h >= 1280)) tag = ' · 720p';
       const mp = (w * h / 1000000).toFixed(1);
       return w + ' × ' + h + ' (' + mp + ' MP)' + tag;
     }
@@ -256,10 +286,10 @@
       const res = await fetch('/api/photos?' + params.toString());
       const data = await res.json();
       currentItems = data.items || [];
-      statsText.textContent = '符合條件: ' + data.total + ' 筆項目 (點擊卡片檢視詳情與複製連結)';
+      statsText.textContent = '共 ' + data.total + ' 筆項目';
 
       if (currentItems.length === 0) {
-        timelineContainer.innerHTML = '<div class="text-center py-20 text-slate-500">找不到符合條件的項目，請先執行 sync 或調整過濾條件。</div>';
+        timelineContainer.innerHTML = '<div class="text-center py-24 text-zinc-500 text-xs">無符合條件的項目，請先執行 sync 或調整搜尋條件。</div>';
         document.getElementById('timelineScrubber').classList.add('hidden');
         return;
       }
@@ -296,31 +326,24 @@
           const isVideo = it.media_type === 'video' || (it.filename && /\.(mp4|mov|mkv|webm|m4v|3gp|avi)$/i.test(it.filename));
           const durStr = formatDuration(it.duration);
 
-          const videoBadge = isVideo
-            ? '<div class="absolute top-2 right-2 bg-black/70 backdrop-blur rounded px-1.5 py-0.5 text-[10px] text-white flex items-center gap-1 font-semibold z-10"><span>▶</span><span>VIDEO</span></div>'
-            : '';
-
-          const durationBadge = (isVideo && durStr)
-            ? '<div class="absolute bottom-11 right-2 bg-black/75 backdrop-blur rounded px-1.5 py-0.5 text-[10px] text-slate-200 font-mono z-10">' + durStr + '</div>'
-            : '';
-
-          const playOverlay = isVideo
-            ? '<div class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-80 group-hover:opacity-100 transition"><div class="w-10 h-10 rounded-full bg-black/50 backdrop-blur flex items-center justify-center text-white text-base">▶</div></div>'
+          const videoIndicator = isVideo
+            ? '<div class="absolute top-2 right-2 bg-black/60 backdrop-blur-sm rounded px-1.5 py-0.5 text-[10px] text-zinc-200 flex items-center gap-1 font-mono z-10">' +
+                '<svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>' +
+                (durStr ? '<span>' + durStr + '</span>' : '') +
+              '</div>'
             : '';
 
           const mediaHtml = thumbSrc
-            ? '<img src="' + thumbSrc + '" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition duration-200" />'
-            : '<div class="w-full h-full flex items-center justify-center text-xs text-slate-600 p-2 text-center">' + label + '</div>';
+            ? '<img src="' + thumbSrc + '" loading="lazy" class="w-full h-full object-cover group-hover:scale-[1.03] transition duration-200" alt="' + label + '" />'
+            : '<div class="w-full h-full flex items-center justify-center text-xs text-zinc-500 p-2 text-center">' + label + '</div>';
 
           return '<div onclick="openModal(' + idx + ')" ' +
-                 'class="group relative aspect-square bg-slate-900 rounded-lg overflow-hidden border border-slate-800 hover:border-sky-500 cursor-pointer transition shadow hover:shadow-sky-500/10">' +
-                 videoBadge +
-                 durationBadge +
-                 playOverlay +
+                 'class="group relative aspect-square bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800/80 hover:border-zinc-600 cursor-pointer transition shadow-sm">' +
+                 videoIndicator +
                  mediaHtml +
-                 '<div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-2 text-[11px] leading-tight z-10">' +
-                   '<div class="font-medium text-slate-100 truncate" title="' + (it.filename || it.id) + '">' + label + '</div>' +
-                   '<div class="text-slate-400 flex justify-between mt-0.5">' +
+                 '<div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent p-2 text-[11px] leading-tight z-10">' +
+                   '<div class="font-normal text-zinc-200 truncate" title="' + (it.filename || it.id) + '">' + label + '</div>' +
+                   '<div class="text-zinc-400 flex justify-between mt-0.5 text-[10px]">' +
                      '<span>' + dateStr + '</span>' +
                      '<span>' + (it.width ? (it.width + 'p') : '') + '</span>' +
                    '</div>' +
@@ -329,9 +352,9 @@
         }).join('');
 
         return '<section id="' + safeId + '" class="timeline-section" data-label="' + grp.label + '" data-year="' + grp.year + '">' +
-               '  <div class="sticky z-20 py-2.5 px-1 bg-slate-950/95 backdrop-blur flex items-baseline gap-2.5 mb-2.5 border-b border-slate-900/80 transition-[top] duration-300 ease-in-out" style="top: var(--header-offset, 52px);">' +
-               '    <h2 class="text-sm sm:text-base font-bold text-slate-200 tracking-tight">' + grp.label + '</h2>' +
-               '    <span class="text-xs text-slate-500 font-medium">' + grp.items.length + ' 筆</span>' +
+               '  <div class="sticky z-20 py-2.5 px-1 bg-zinc-950/90 backdrop-blur-md flex items-baseline gap-2.5 mb-2.5 border-b border-zinc-800/50 transition-[top] duration-300 ease-in-out" style="top: var(--header-offset, 52px);">' +
+               '    <h2 class="text-xs sm:text-sm font-medium text-zinc-300 tracking-tight">' + grp.label + '</h2>' +
+               '    <span class="text-[11px] text-zinc-400 font-normal">' + grp.items.length + ' 筆</span>' +
                '  </div>' +
                '  <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">' +
                cardsHtml +
@@ -374,7 +397,7 @@
         html = uniqueYears.map(function(yr) {
           const firstSectionId = 'sec-' + encodeURIComponent(yearsMap[yr][0].label);
           return '<button onclick="scrollToSection(\'' + firstSectionId + '\')" data-target-year="' + yr + '" ' +
-                 'class="scrubber-item text-[11px] font-semibold text-slate-400 hover:text-sky-300 hover:scale-110 px-1 py-0.5 transition cursor-pointer" title="' + yr + ' 年">' +
+                 'class="scrubber-item text-[10px] font-mono text-zinc-400 hover:text-zinc-200 px-1.5 py-0.5 transition cursor-pointer" title="' + yr + ' 年">' +
                  yr +
                  '</button>';
         }).join('');
@@ -384,7 +407,7 @@
           const safeId = 'sec-' + encodeURIComponent(k);
           const monthText = k.replace(/^\d+\s*年\s*/, '');
           return '<button onclick="scrollToSection(\'' + safeId + '\')" data-target-label="' + k + '" ' +
-                 'class="scrubber-item text-[11px] font-semibold text-slate-400 hover:text-sky-300 hover:scale-110 px-1 py-0.5 transition cursor-pointer" title="' + k + '">' +
+                 'class="scrubber-item text-[10px] font-mono text-zinc-400 hover:text-zinc-200 px-1.5 py-0.5 transition cursor-pointer" title="' + k + '">' +
                  (monthText || k) +
                  '</button>';
         }).join('');
@@ -441,17 +464,17 @@
           clearTimeout(scrubberFadeTimer);
           scrubberFadeTimer = setTimeout(function() {
             pill.classList.add('opacity-0');
-          }, 1300);
+          }, 1200);
         }
 
         // 高亮對應軌道上的按鈕
         document.querySelectorAll('.scrubber-item').forEach(function(el) {
           if (el.getAttribute('data-target-year') === year || el.getAttribute('data-target-label') === label) {
-            el.classList.add('text-sky-400', 'font-bold', 'scale-110');
-            el.classList.remove('text-slate-400');
+            el.classList.add('text-zinc-100', 'font-semibold');
+            el.classList.remove('text-zinc-400');
           } else {
-            el.classList.remove('text-sky-400', 'font-bold', 'scale-110');
-            el.classList.add('text-slate-400');
+            el.classList.remove('text-zinc-100', 'font-semibold');
+            el.classList.add('text-zinc-400');
           }
         });
       }
@@ -468,9 +491,8 @@
 
       // Header
       const typeBadge = document.getElementById('modalTypeBadge');
-      typeBadge.textContent = isVideo ? '▶ 影片 VIDEO' : '📷 相片 PHOTO';
-      typeBadge.className = isVideo ? 'text-xs px-2 py-0.5 rounded font-bold uppercase bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0'
-                                    : 'text-xs px-2 py-0.5 rounded font-bold uppercase bg-sky-500/20 text-sky-300 border border-sky-500/30 shrink-0';
+      typeBadge.textContent = isVideo ? '影片 VIDEO' : '相片 PHOTO';
+      typeBadge.className = 'text-[11px] px-2 py-0.5 rounded font-mono font-medium bg-zinc-800 text-zinc-300 border border-zinc-700/60 shrink-0';
 
       document.getElementById('modalTitle').textContent = it.filename || ('項目 ID: ' + it.id);
       document.getElementById('modalCounter').textContent = (idx + 1) + ' / ' + currentItems.length;
@@ -481,11 +503,11 @@
 
       // Thumbnail
       const thumb = document.getElementById('modalThumb');
-      thumb.src = it.thumb_path ? ('/' + it.thumb_path) : '';
+      thumb.src = it.thumb_path ? ('/' + it.thumb_path) : "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E";
 
       const thumbBadge = document.getElementById('modalThumbBadge');
       if (isVideo && durStr) {
-        thumbBadge.textContent = '長度 ' + durStr;
+        thumbBadge.textContent = durStr;
         thumbBadge.classList.remove('hidden');
       } else {
         thumbBadge.classList.add('hidden');
@@ -494,9 +516,9 @@
       // Metadata Grid
       document.getElementById('modalFilename').textContent = it.filename || '未補齊 (可執行 gphotos-indexer sync -fetch-details 補齊)';
       if (!it.filename) {
-        document.getElementById('modalFilename').className = 'text-slate-400 italic font-mono text-xs';
+        document.getElementById('modalFilename').className = 'text-zinc-500 italic font-mono text-xs';
       } else {
-        document.getElementById('modalFilename').className = 'text-slate-200 font-mono font-medium break-all select-all';
+        document.getElementById('modalFilename').className = 'text-zinc-200 font-mono break-all select-all';
       }
 
       const dateStr = it.taken_at ? new Date(it.taken_at * 1000).toLocaleString('zh-TW', { hour12: false }) : '未知拍攝時間';
@@ -551,8 +573,8 @@
       const copyBtn = document.getElementById('copyBtn');
       const copyIcon = document.getElementById('copyIcon');
       const copyText = document.getElementById('copyText');
-      copyBtn.className = 'px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 transition';
-      copyIcon.textContent = '📋';
+      copyBtn.className = 'px-3.5 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700/80 border border-zinc-700/70 text-zinc-200 text-xs font-medium flex items-center gap-1.5 transition focus:outline-none';
+      copyIcon.innerHTML = '<svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
       copyText.textContent = '複製連結';
     }
 
@@ -564,9 +586,9 @@
         const copyBtn = document.getElementById('copyBtn');
         const copyIcon = document.getElementById('copyIcon');
         const copyText = document.getElementById('copyText');
-        copyBtn.className = 'px-3.5 py-1.5 rounded-lg bg-emerald-600/30 border border-emerald-500/50 text-emerald-300 text-xs font-medium flex items-center gap-1.5 transition';
-        copyIcon.textContent = '✅';
-        copyText.textContent = '已複製連結！';
+        copyBtn.className = 'px-3.5 py-1.5 rounded-md bg-zinc-700/60 border border-zinc-600 text-zinc-100 text-xs font-medium flex items-center gap-1.5 transition focus:outline-none';
+        copyIcon.innerHTML = '<svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+        copyText.textContent = '已複製連結';
         clearTimeout(copyTimer);
         copyTimer = setTimeout(resetCopyBtn, 2200);
       };
