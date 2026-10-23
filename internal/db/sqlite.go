@@ -34,9 +34,23 @@ type MediaItem struct {
 	RawMetadata  string  `json:"-"`
 }
 
+type Album struct {
+	ID             string `json:"id"`
+	Title          string `json:"title"`
+	ProductURL     string `json:"product_url"`
+	CoverBaseURL   string `json:"cover_base_url"`
+	CoverThumbPath string `json:"cover_thumb_path"`
+	ItemCount      int    `json:"item_count"`
+	IndexedCount   int    `json:"indexed_count"`
+	StartTime      int64  `json:"start_time"`
+	EndTime        int64  `json:"end_time"`
+	RawMetadata    string `json:"-"`
+}
+
 type SearchFilter struct {
 	Query     string
 	MediaType string
+	AlbumID   string
 	DateFrom  int64
 	DateTo    int64
 	Limit     int
@@ -95,7 +109,30 @@ func (s *Store) migrate() error {
 		"CREATE INDEX IF NOT EXISTS idx_media_type ON media_items(media_type);" +
 		"CREATE VIRTUAL TABLE IF NOT EXISTS media_fts USING fts5(" +
 		"id UNINDEXED, filename, description, camera_make, camera_model, location_name, tokenize = 'unicode61'" +
-		");"
+		");" +
+		"CREATE TABLE IF NOT EXISTS albums (" +
+		"id TEXT PRIMARY KEY, " +
+		"title TEXT DEFAULT '', " +
+		"product_url TEXT NOT NULL, " +
+		"cover_base_url TEXT DEFAULT '', " +
+		"cover_thumb_path TEXT DEFAULT '', " +
+		"item_count INTEGER DEFAULT 0, " +
+		"start_time INTEGER DEFAULT 0, " +
+		"end_time INTEGER DEFAULT 0, " +
+		"raw_metadata TEXT DEFAULT '', " +
+		"created_at INTEGER NOT NULL, " +
+		"updated_at INTEGER NOT NULL" +
+		");" +
+		"CREATE INDEX IF NOT EXISTS idx_albums_start_time ON albums(start_time DESC);" +
+		"CREATE INDEX IF NOT EXISTS idx_albums_title ON albums(title);" +
+		"CREATE TABLE IF NOT EXISTS album_items (" +
+		"album_id TEXT NOT NULL, " +
+		"media_id TEXT NOT NULL, " +
+		"added_at INTEGER NOT NULL, " +
+		"PRIMARY KEY (album_id, media_id)" +
+		");" +
+		"CREATE INDEX IF NOT EXISTS idx_album_items_album_id ON album_items(album_id);" +
+		"CREATE INDEX IF NOT EXISTS idx_album_items_media_id ON album_items(media_id);"
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
 	}
@@ -228,6 +265,131 @@ func (s *Store) Count() (int, error) {
 	return count, err
 }
 
+func (s *Store) UpsertAlbum(album Album) error {
+	now := time.Now().Unix()
+	if album.ProductURL == "" && album.ID != "" {
+		album.ProductURL = "https://photos.google.com/album/" + album.ID
+	}
+
+	query := "INSERT INTO albums (" +
+		"id, title, product_url, cover_base_url, cover_thumb_path, " +
+		"item_count, start_time, end_time, raw_metadata, created_at, updated_at" +
+		") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+		"ON CONFLICT(id) DO UPDATE SET " +
+		"title            = CASE WHEN excluded.title != '' THEN excluded.title ELSE albums.title END, " +
+		"product_url      = CASE WHEN excluded.product_url != '' THEN excluded.product_url ELSE albums.product_url END, " +
+		"cover_base_url   = CASE WHEN excluded.cover_base_url != '' THEN excluded.cover_base_url ELSE albums.cover_base_url END, " +
+		"cover_thumb_path = CASE WHEN excluded.cover_thumb_path != '' THEN excluded.cover_thumb_path ELSE albums.cover_thumb_path END, " +
+		"item_count       = CASE WHEN excluded.item_count > 0 THEN excluded.item_count ELSE albums.item_count END, " +
+		"start_time       = CASE WHEN excluded.start_time > 0 THEN excluded.start_time ELSE albums.start_time END, " +
+		"end_time         = CASE WHEN excluded.end_time > 0 THEN excluded.end_time ELSE albums.end_time END, " +
+		"raw_metadata     = CASE WHEN excluded.raw_metadata != '' THEN excluded.raw_metadata ELSE albums.raw_metadata END, " +
+		"updated_at       = excluded.updated_at;"
+
+	_, err := s.db.Exec(query,
+		album.ID, album.Title, album.ProductURL, album.CoverBaseURL, album.CoverThumbPath,
+		album.ItemCount, album.StartTime, album.EndTime, album.RawMetadata, now, now,
+	)
+	return err
+}
+
+func (s *Store) AddAlbumItem(albumID, mediaID string) error {
+	if albumID == "" || mediaID == "" {
+		return nil
+	}
+	now := time.Now().Unix()
+	_, err := s.db.Exec(
+		"INSERT INTO album_items (album_id, media_id, added_at) VALUES (?, ?, ?) "+
+			"ON CONFLICT(album_id, media_id) DO UPDATE SET added_at = excluded.added_at",
+		albumID, mediaID, now,
+	)
+	return err
+}
+
+func (s *Store) HasAlbumThumb(id string) bool {
+	var thumb string
+	err := s.db.QueryRow("SELECT cover_thumb_path FROM albums WHERE id = ?", id).Scan(&thumb)
+	return err == nil && thumb != ""
+}
+
+func (s *Store) HasAlbumItem(albumID, mediaID string) bool {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM album_items WHERE album_id = ? AND media_id = ?", albumID, mediaID).Scan(&count)
+	return err == nil && count > 0
+}
+
+func (s *Store) SyncAlbumStats(albumID string) error {
+	now := time.Now().Unix()
+	_, err := s.db.Exec(`
+		UPDATE albums SET
+			start_time = CASE WHEN start_time > 0 THEN start_time ELSE COALESCE((
+				SELECT MIN(m.taken_at) FROM album_items ai JOIN media_items m ON ai.media_id = m.id
+				WHERE ai.album_id = albums.id AND m.taken_at > 0
+			), 0) END,
+			end_time = CASE WHEN end_time > 0 THEN end_time ELSE COALESCE((
+				SELECT MAX(m.taken_at) FROM album_items ai JOIN media_items m ON ai.media_id = m.id
+				WHERE ai.album_id = albums.id AND m.taken_at > 0
+			), 0) END,
+			item_count = CASE WHEN item_count > (SELECT COUNT(*) FROM album_items ai WHERE ai.album_id = albums.id)
+				THEN item_count
+				ELSE (SELECT COUNT(*) FROM album_items ai WHERE ai.album_id = albums.id)
+			END,
+			cover_thumb_path = CASE WHEN cover_thumb_path != '' THEN cover_thumb_path ELSE COALESCE((
+				SELECT m.thumb_path FROM album_items ai JOIN media_items m ON ai.media_id = m.id
+				WHERE ai.album_id = albums.id AND m.thumb_path != ''
+				ORDER BY m.taken_at DESC LIMIT 1
+			), '') END,
+			updated_at = ?
+		WHERE id = ?
+	`, now, albumID)
+	return err
+}
+
+func (s *Store) CountAlbums() (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM albums").Scan(&count)
+	return count, err
+}
+
+func (s *Store) ListAlbums() ([]Album, error) {
+	query := `
+		SELECT
+			a.id, a.title, a.product_url, a.cover_base_url,
+			CASE WHEN a.cover_thumb_path != '' THEN a.cover_thumb_path ELSE COALESCE((
+				SELECT m.thumb_path FROM album_items ai JOIN media_items m ON ai.media_id = m.id
+				WHERE ai.album_id = a.id AND m.thumb_path != ''
+				ORDER BY m.taken_at DESC LIMIT 1
+			), '') END AS cover_thumb_path,
+			CASE WHEN a.item_count > (SELECT COUNT(*) FROM album_items ai WHERE ai.album_id = a.id)
+				THEN a.item_count
+				ELSE (SELECT COUNT(*) FROM album_items ai WHERE ai.album_id = a.id)
+			END AS item_count,
+			(SELECT COUNT(*) FROM album_items ai WHERE ai.album_id = a.id) AS indexed_count,
+			a.start_time, a.end_time
+		FROM albums a
+		ORDER BY a.start_time DESC, a.updated_at DESC, a.title ASC
+	`
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []Album
+	for rows.Next() {
+		var alb Album
+		if err := rows.Scan(
+			&alb.ID, &alb.Title, &alb.ProductURL, &alb.CoverBaseURL,
+			&alb.CoverThumbPath, &alb.ItemCount, &alb.IndexedCount,
+			&alb.StartTime, &alb.EndTime,
+		); err != nil {
+			return nil, err
+		}
+		results = append(results, alb)
+	}
+	return results, nil
+}
+
 func (s *Store) Search(f SearchFilter) ([]MediaItem, int, error) {
 	if f.Limit <= 0 || f.Limit > 500 {
 		f.Limit = 100
@@ -243,16 +405,21 @@ func (s *Store) Search(f SearchFilter) ([]MediaItem, int, error) {
 			"OR m.filename LIKE ? " +
 			"OR m.camera_model LIKE ? " +
 			"OR m.location_name LIKE ? " +
-			"OR m.description LIKE ?" +
+			"OR m.description LIKE ? " +
+			"OR m.id IN (SELECT ai.media_id FROM album_items ai JOIN albums a ON ai.album_id = a.id WHERE a.title LIKE ?)" +
 			")")
 		likeQ := "%" + q + "%"
 		ftsQ := "\"" + strings.ReplaceAll(q, "\"", "\"\"") + "\"*"
-		args = append(args, ftsQ, likeQ, likeQ, likeQ, likeQ)
+		args = append(args, ftsQ, likeQ, likeQ, likeQ, likeQ, likeQ)
 	}
 
 	if f.MediaType != "" && f.MediaType != "all" {
 		where = append(where, "m.media_type = ?")
 		args = append(args, f.MediaType)
+	}
+	if f.AlbumID != "" && f.AlbumID != "all" {
+		where = append(where, "m.id IN (SELECT media_id FROM album_items WHERE album_id = ?)")
+		args = append(args, f.AlbumID)
 	}
 	if f.DateFrom > 0 {
 		where = append(where, "m.taken_at >= ?")

@@ -75,6 +75,32 @@ func main() {
 			log.Fatalf("Sync 失敗: %v", err)
 		}
 
+	case "albums":
+		fs := flag.NewFlagSet("albums", flag.ExitOnError)
+		dataDir := fs.String("data", "./data", "資料與 SQLite 儲存目錄")
+		headless := fs.Bool("headless", true, "是否以 Headless 模式背景執行")
+		maxAlbums := fs.Int("max-albums", 0, "單次最大抓取相簿數 (0 為不限制)")
+		maxItems := fs.Int("max-items", 0, "單本相簿內最大抓取張數 (0 為不限制)")
+		forceFull := fs.Bool("force-full", false, "忽略 Watermark 強制對每本相簿全量掃描")
+		fetchDetails := fs.Bool("fetch-details", false, "自動開啟資訊欄巡覽以補齊原始檔名與相機 EXIF")
+		_ = fs.Parse(os.Args[2:])
+
+		store := mustOpenDB(*dataDir)
+		defer store.Close()
+
+		runner := scraper.NewRunner(scraper.Config{
+			DataDir:      *dataDir,
+			Headless:     *headless,
+			MaxAlbums:    *maxAlbums,
+			MaxItems:     *maxItems,
+			ForceFull:    *forceFull,
+			FetchDetails: *fetchDetails,
+		}, store)
+
+		if err := runner.SyncAlbums(ctx); err != nil {
+			log.Fatalf("Albums 同步失敗: %v", err)
+		}
+
 	case "serve":
 		fs := flag.NewFlagSet("serve", flag.ExitOnError)
 		dataDir := fs.String("data", "./data", "資料與 SQLite 儲存目錄")
@@ -116,6 +142,7 @@ func printUsage() {
 	fmt.Println("可用子命令:")
 	fmt.Println("  auth    啟動有頭 Chrome 視窗完成 Google 帳號登入並保存 Session")
 	fmt.Println("  sync    攔截 batchexecute 與 DOM，自動抓取 WebP 縮圖與 Metadata 存入 SQLite")
+	fmt.Println("  albums  針對所有個人相簿建立索引（包含相簿清單與相簿內相片關聯）")
 	fmt.Println("  serve   啟動本地極速搜尋 Web UI (點擊直接跳轉 Google Photos 雲端原圖)")
 	fmt.Println("  version 顯示版本資訊")
 }

@@ -38,6 +38,7 @@ func (s *Server) Start(ctx context.Context) error {
 	thumbsDir := filepath.Join(s.dataDir, "thumbs")
 	mux.Handle("GET /thumbs/", http.StripPrefix("/thumbs/", http.FileServer(http.Dir(thumbsDir))))
 	mux.HandleFunc("GET /api/photos", s.handleSearch)
+	mux.HandleFunc("GET /api/albums", s.handleAlbums)
 	mux.HandleFunc("GET /", s.handleIndex)
 
 	addr := fmt.Sprintf(":%d", s.port)
@@ -97,6 +98,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	items, total, err := s.store.Search(db.SearchFilter{
 		Query:     q.Get("q"),
 		MediaType: q.Get("type"),
+		AlbumID:   q.Get("album_id"),
 		DateFrom:  dateFrom,
 		DateTo:    dateTo,
 		Limit:     limit,
@@ -111,6 +113,23 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"total": total,
 		"items": items,
+	})
+}
+
+func (s *Server) handleAlbums(w http.ResponseWriter, r *http.Request) {
+	albums, err := s.store.ListAlbums()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if albums == nil {
+		albums = []db.Album{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"total": len(albums),
+		"items": albums,
 	})
 }
 

@@ -38,8 +38,15 @@
 
       <!-- 搜尋與過濾條件 (強制作為單列 flex-nowrap，優雅收斂) -->
       <div class="flex items-center gap-1.5 sm:gap-2 flex-nowrap shrink-0 overflow-x-auto no-scrollbar">
-        <input id="qInput" type="text" placeholder="搜尋檔名、相機、地點..."
-          class="w-32 sm:w-44 md:w-60 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500/30 rounded-md px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none transition shrink-0" />
+        <button id="viewAlbumsBtn" onclick="toggleAlbumsView()" type="button"
+          class="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-md px-2.5 py-1.5 text-xs text-zinc-300 hover:text-zinc-100 transition shrink-0 flex items-center gap-1 cursor-pointer">
+          <span>📚 相簿總覽</span>
+        </button>
+        <input id="qInput" type="text" placeholder="搜尋檔名、相簿、相機、地點..."
+          class="w-32 sm:w-44 md:w-56 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500/30 rounded-md px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none transition shrink-0" />
+        <select id="albumSelect" class="max-w-[150px] sm:max-w-[200px] bg-zinc-900 border border-zinc-800 hover:border-zinc-700 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500/30 rounded-md px-2 py-1.5 text-xs text-zinc-300 focus:outline-none transition shrink-0">
+          <option value="all">全部相簿</option>
+        </select>
         <select id="typeSelect" class="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500/30 rounded-md px-2 py-1.5 text-xs text-zinc-300 focus:outline-none transition shrink-0">
           <option value="all">全部類型</option>
           <option value="photo">相片</option>
@@ -52,8 +59,10 @@
     </div>
   </header>
 
-  <!-- 主時間軸容器 -->
+  <!-- 主時間軸與相簿容器 -->
   <main class="max-w-7xl mx-auto p-4 sm:p-6 pb-24">
+    <div id="albumBanner" class="hidden mb-6 p-3.5 rounded-lg bg-zinc-900/90 border border-zinc-800 flex flex-wrap items-center justify-between gap-3"></div>
+    <div id="albumsGridContainer" class="hidden"></div>
     <div id="timelineContainer" class="space-y-8"></div>
   </main>
 
@@ -176,25 +185,34 @@
 
   <script>
     const qInput = document.getElementById('qInput');
+    const albumSelect = document.getElementById('albumSelect');
     const typeSelect = document.getElementById('typeSelect');
     const dateFrom = document.getElementById('dateFrom');
     const dateTo = document.getElementById('dateTo');
     const timelineContainer = document.getElementById('timelineContainer');
+    const albumsGridContainer = document.getElementById('albumsGridContainer');
+    const albumBanner = document.getElementById('albumBanner');
+    const viewAlbumsBtn = document.getElementById('viewAlbumsBtn');
     const statsText = document.getElementById('statsText');
     const detailModal = document.getElementById('detailModal');
     const mainHeader = document.getElementById('mainHeader');
 
     let currentItems = [];
+    let allAlbums = [];
+    let isAlbumsView = false;
     let currentModalIndex = -1;
     let currentModalItem = null;
 
     let timer = null;
     function triggerSearch() {
+      if (isAlbumsView) {
+        switchToPhotosView();
+      }
       clearTimeout(timer);
       timer = setTimeout(loadPhotos, 120);
     }
 
-    [qInput, typeSelect, dateFrom, dateTo].forEach(function(el) {
+    [qInput, albumSelect, typeSelect, dateFrom, dateTo].forEach(function(el) {
       el.addEventListener('input', triggerSearch);
     });
 
@@ -275,10 +293,128 @@
       return w + ' × ' + h + ' (' + mp + ' MP)' + tag;
     }
 
+    async function loadAlbums() {
+      try {
+        const res = await fetch('/api/albums');
+        const data = await res.json();
+        allAlbums = data.items || [];
+        albumSelect.innerHTML = '<option value="all">全部相簿 (' + allAlbums.length + ')</option>' +
+          allAlbums.map(function(a) {
+            const title = a.title || ('未命名 (' + a.id.slice(0, 8) + ')');
+            const cnt = a.indexed_count || a.item_count || 0;
+            return '<option value="' + a.id + '">' + title + ' (' + cnt + ')</option>';
+          }).join('');
+      } catch (e) {
+        allAlbums = [];
+      }
+    }
+
+    function switchToPhotosView() {
+      isAlbumsView = false;
+      albumsGridContainer.classList.add('hidden');
+      timelineContainer.classList.remove('hidden');
+      viewAlbumsBtn.className = 'bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-md px-2.5 py-1.5 text-xs text-zinc-300 hover:text-zinc-100 transition shrink-0 flex items-center gap-1 cursor-pointer';
+    }
+
+    function toggleAlbumsView() {
+      if (isAlbumsView) {
+        switchToPhotosView();
+        loadPhotos();
+        return;
+      }
+      isAlbumsView = true;
+      timelineContainer.classList.add('hidden');
+      albumBanner.classList.add('hidden');
+      document.getElementById('timelineScrubber').classList.add('hidden');
+      albumsGridContainer.classList.remove('hidden');
+      viewAlbumsBtn.className = 'bg-zinc-100 border border-zinc-100 rounded-md px-2.5 py-1.5 text-xs text-zinc-950 font-medium transition shrink-0 flex items-center gap-1 cursor-pointer';
+      renderAlbumsGrid();
+    }
+
+    function selectAlbumFromCard(albumId) {
+      albumSelect.value = albumId;
+      switchToPhotosView();
+      loadPhotos();
+    }
+
+    function clearAlbumFilter() {
+      albumSelect.value = 'all';
+      loadPhotos();
+    }
+
+    function renderAlbumsGrid() {
+      statsText.textContent = '共 ' + allAlbums.length + ' 本相簿';
+      if (allAlbums.length === 0) {
+        albumsGridContainer.innerHTML = '<div class="text-center py-24 text-zinc-500 text-xs">尚無相簿索引資料，請先執行 <code class="text-zinc-300 bg-zinc-900 px-1.5 py-0.5 rounded">gphotos-indexer albums</code> 建立相簿索引。</div>';
+        return;
+      }
+
+      albumsGridContainer.innerHTML = '<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">' +
+        allAlbums.map(function(alb) {
+          const title = alb.title || ('未命名相簿 (' + alb.id.slice(0, 10) + '...)');
+          const coverSrc = alb.cover_thumb_path ? ('/' + alb.cover_thumb_path) : '';
+          const cntText = (alb.indexed_count || 0) + (alb.item_count && alb.item_count > alb.indexed_count ? (' / ' + alb.item_count) : '') + ' 項';
+          let dateRange = '';
+          if (alb.start_time > 0) {
+            const s = new Date(alb.start_time * 1000).toISOString().slice(0, 10);
+            const e = alb.end_time > 0 ? new Date(alb.end_time * 1000).toISOString().slice(0, 10) : '';
+            dateRange = (e && e !== s) ? (s + ' ~ ' + e) : s;
+          }
+
+          const coverHtml = coverSrc
+            ? '<img src="' + coverSrc + '" loading="lazy" class="w-full h-full object-cover group-hover:scale-[1.03] transition duration-200" alt="' + title + '" />'
+            : '<div class="w-full h-full flex items-center justify-center text-xs text-zinc-500 p-3 text-center">📚 ' + title + '</div>';
+
+          return '<div onclick="selectAlbumFromCard(\'' + alb.id + '\')" ' +
+                 'class="group relative bg-zinc-900 rounded-xl overflow-hidden border border-zinc-800/80 hover:border-zinc-600 cursor-pointer transition shadow-sm flex flex-col">' +
+                 '  <div class="relative aspect-square bg-zinc-950 overflow-hidden">' +
+                 coverHtml +
+                 '    <a href="' + alb.product_url + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" ' +
+                 '       class="absolute top-2 right-2 bg-black/70 hover:bg-black/90 text-zinc-200 rounded-md px-2 py-1 text-[10px] backdrop-blur-sm opacity-0 group-hover:opacity-100 transition" title="在 Google Photos 開啟相簿">雲端相簿 ↗</a>' +
+                 '  </div>' +
+                 '  <div class="p-3 flex-1 flex flex-col justify-between">' +
+                 '    <div class="text-xs font-medium text-zinc-200 truncate" title="' + title + '">' + title + '</div>' +
+                 '    <div class="mt-1.5 flex items-center justify-between text-[11px] text-zinc-400">' +
+                 '      <span>' + cntText + '</span>' +
+                 '      <span class="truncate ml-2">' + dateRange + '</span>' +
+                 '    </div>' +
+                 '  </div>' +
+                 '</div>';
+        }).join('') +
+        '</div>';
+    }
+
+    function updateAlbumBanner() {
+      const selectedId = albumSelect.value;
+      if (!selectedId || selectedId === 'all') {
+        albumBanner.classList.add('hidden');
+        return;
+      }
+      const alb = allAlbums.find(function(a) { return a.id === selectedId; });
+      if (!alb) {
+        albumBanner.classList.add('hidden');
+        return;
+      }
+      const title = alb.title || alb.id;
+      albumBanner.classList.remove('hidden');
+      albumBanner.innerHTML =
+        '<div class="flex items-center gap-2.5 min-w-0">' +
+        '  <span class="text-xs px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700/60 shrink-0">相簿篩選</span>' +
+        '  <span class="text-sm font-medium text-zinc-100 truncate">' + title + '</span>' +
+        '  <span class="text-xs text-zinc-400 shrink-0">(已索引 ' + (alb.indexed_count || 0) + ' 筆)</span>' +
+        '</div>' +
+        '<div class="flex items-center gap-2 shrink-0">' +
+        '  <a href="' + alb.product_url + '" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs transition">開啟 Google Photos 相簿 ↗</a>' +
+        '  <button onclick="clearAlbumFilter()" type="button" class="px-2.5 py-1 rounded bg-zinc-800/60 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 text-xs transition cursor-pointer">清除篩選 ✕</button>' +
+        '</div>';
+    }
+
     async function loadPhotos() {
+      updateAlbumBanner();
       const params = new URLSearchParams({
         q: qInput.value,
         type: typeSelect.value,
+        album_id: albumSelect.value === 'all' ? '' : albumSelect.value,
         date_from: dateFrom.value,
         date_to: dateTo.value,
         limit: '500'
@@ -286,7 +422,7 @@
       const res = await fetch('/api/photos?' + params.toString());
       const data = await res.json();
       currentItems = data.items || [];
-      statsText.textContent = '共 ' + data.total + ' 筆項目';
+      statsText.textContent = '共 ' + data.total + ' 筆項目' + (allAlbums.length > 0 ? (' · ' + allAlbums.length + ' 本相簿') : '');
 
       if (currentItems.length === 0) {
         timelineContainer.innerHTML = '<div class="text-center py-24 text-zinc-500 text-xs">無符合條件的項目，請先執行 sync 或調整搜尋條件。</div>';
@@ -618,7 +754,7 @@
       document.body.removeChild(ta);
     }
 
-    loadPhotos();
+    loadAlbums().then(loadPhotos);
   </script>
 </body>
 </html>

@@ -117,3 +117,65 @@ func TestParseBatchExecute_InvalidInput(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAlbumsBatchExecute(t *testing.T) {
+	mockAlbumsResponse := ")]}'\n\n" +
+		"240\n" +
+		"[" +
+		"  [\"wrb.fr\", \"Z5xsfc\", \"[[[\\\"AF1QipMockAlbumKey0001\\\",[[\\\"https://lh3.googleusercontent.com/pw/AP1GczAlbumCover1=w400-h400-c\\\",1200,900]],null,null,{\\\"72930366\\\":[48,\\\"2026 北海道冬季旅遊\\\",[1769322730000,1769904000000]]}]]]\", null, null, null, \"generic\"]" +
+		"]\n" +
+		"210\n" +
+		"[" +
+		"  [\"wrb.fr\", \"Z5xsfc\", \"[[[\\\"AF1QipMockAlbumKey0002\\\",[\\\"https://photos.fife.usercontent.google.com/pw/AP1GczAlbumCover2=w300-h300\\\"],\\\"家庭聚餐相簿\\\",15,[1759000000000,1759086400000]]]]\", null, null, null, \"generic\"]" +
+		"]\n" +
+		"185\n" +
+		"[" +
+		"  [\"wrb.fr\", \"sy123\", \"[[\\\"AF1QipMockPhotoKey0001\\\",null,1769322730000,null,[\\\"https://lh3.googleusercontent.com/pw/AP1GczMockBaseUrl1=w800-h600-no\\\",4032,3024,[10,20]]]]\", null, null, null, \"generic\"]" +
+		"]\n"
+
+	albums := ParseAlbumsBatchExecute(mockAlbumsResponse)
+	if len(albums) != 2 {
+		t.Fatalf("預期解析出 2 筆相簿（排除一般相片節點），實際取得 %d 筆", len(albums))
+	}
+
+	byID := make(map[string]db.Album)
+	for _, a := range albums {
+		byID[a.ID] = a
+	}
+
+	alb1, ok := byID["AF1QipMockAlbumKey0001"]
+	if !ok {
+		t.Fatalf("找不到預期的相簿 ID: AF1QipMockAlbumKey0001")
+	}
+	if alb1.Title != "2026 北海道冬季旅遊" {
+		t.Errorf("相簿標題解析錯誤: got %q", alb1.Title)
+	}
+	if alb1.ItemCount != 48 {
+		t.Errorf("相簿項目數解析錯誤: 預期 48, 實際為 %d", alb1.ItemCount)
+	}
+	if alb1.CoverBaseURL != "https://lh3.googleusercontent.com/pw/AP1GczAlbumCover1" {
+		t.Errorf("封面 BaseURL 剝除參數錯誤: got %q", alb1.CoverBaseURL)
+	}
+	if alb1.StartTime != 1769322730 || alb1.EndTime != 1769904000 {
+		t.Errorf("相簿時間範圍解析錯誤: Start=%d, End=%d", alb1.StartTime, alb1.EndTime)
+	}
+
+	alb2, ok := byID["AF1QipMockAlbumKey0002"]
+	if !ok {
+		t.Fatalf("找不到預期的相簿 ID: AF1QipMockAlbumKey0002")
+	}
+	if alb2.Title != "家庭聚餐相簿" || alb2.ItemCount != 15 {
+		t.Errorf("相簿 2 解析錯誤: Title=%q, ItemCount=%d", alb2.Title, alb2.ItemCount)
+	}
+	if alb2.CoverBaseURL != "https://photos.fife.usercontent.google.com/pw/AP1GczAlbumCover2" {
+		t.Errorf("相簿 2 封面 BaseURL 錯誤: got %q", alb2.CoverBaseURL)
+	}
+
+	// 同時確認 ParseBatchExecute 不會將含 72930366 的相簿節點誤判為一般相片
+	mediaItems := ParseBatchExecute(mockAlbumsResponse)
+	for _, m := range mediaItems {
+		if m.ID == "AF1QipMockAlbumKey0001" {
+			t.Errorf("ParseBatchExecute 不應將含 72930366 的相簿節點解析為相片")
+		}
+	}
+}

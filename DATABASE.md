@@ -21,9 +21,11 @@
 
 ## 2. 資料表綱要 (Schema Specification)
 
-資料庫內建兩張核心資料表：
+資料庫內建四張核心資料表：
 1. `media_items`：實體主表，儲存所有相片/影片的屬性、EXIF、拍攝時間與檔案路徑。
 2. `media_fts`：FTS5 虛擬全文檢索表，加速檔名、相機、地名與 AI 描述搜尋。
+3. `albums`：相簿主表，儲存個人相簿的標題、封面縮圖、項目數量與起訖時間區間。
+4. `album_items`：相簿與相片的多對多關聯表（`album_id` ↔ `media_id`）。
 
 ### 2.1 `media_items` 主資料表
 
@@ -92,6 +94,58 @@ CREATE VIRTUAL TABLE IF NOT EXISTS media_fts USING fts5(
 
 ---
 
+### 2.3 `albums` 相簿主資料表
+
+```sql
+CREATE TABLE IF NOT EXISTS albums (
+    id               TEXT PRIMARY KEY,          -- Google Photos Album MediaKey (如 AF1Qip...)
+    title            TEXT DEFAULT '',           -- 相簿標題 (如 "2026 北海道冬季旅遊")
+    product_url      TEXT NOT NULL,             -- 相簿雲端網址 (https://photos.google.com/album/<id>)
+    cover_base_url   TEXT DEFAULT '',           -- 封面圖片 Google CDN 基礎網址
+    cover_thumb_path TEXT DEFAULT '',           -- 本地封面縮圖相對路徑 (thumbs/<id>.webp)
+    item_count       INTEGER DEFAULT 0,         -- 相簿總項目數 (雲端標示或已索引數量取大者)
+    start_time       INTEGER DEFAULT 0,         -- 相簿內最早拍攝時間 (Unix Timestamp 秒數, UTC)
+    end_time         INTEGER DEFAULT 0,         -- 相簿內最晚拍攝時間 (Unix Timestamp 秒數, UTC)
+    raw_metadata     TEXT DEFAULT '',           -- Google Photos 原始相簿 JSON 陣列備份
+    created_at       INTEGER NOT NULL,          -- 本地首次索引時間 (Unix Timestamp 秒數)
+    updated_at       INTEGER NOT NULL           -- 本地最後更新時間 (Unix Timestamp 秒數)
+);
+
+CREATE INDEX IF NOT EXISTS idx_albums_start_time ON albums(start_time DESC);
+CREATE INDEX IF NOT EXISTS idx_albums_title ON albums(title);
+```
+
+#### `albums` 欄位語意與注意事項
+
+| 欄位名 | 類型 | 範例值 | 備註與 Agent 處理指南 |
+| :--- | :--- | :--- | :--- |
+| `id` | `TEXT` | `AF1QipAlbumKey...` | Google Photos 相簿唯一鍵。 |
+| `title` | `TEXT` | `2026 日本東京滑雪行` | 相簿名稱。可用於 `LIKE` 或精确比對以抽取特定相簿。 |
+| `product_url` | `TEXT` | `https://photos.google.com/album/AF1Qip...` | 雲端相簿直接開啟連結。 |
+| `cover_thumb_path` | `TEXT` | `thumbs/AF1Qip...webp` | 本地封面縮圖路徑。若相簿列表未抓到封面，`SyncAlbumStats` 會自動回填相簿內最新相片之縮圖。 |
+| `item_count` | `INTEGER` | `48` | 相簿包含的相片/影片總數。 |
+| `start_time` / `end_time` | `INTEGER` | `1769322730` / `1769904000` | 相簿涵蓋的拍攝時間區間（Unix 秒數）。若列表封包未提供，會在索引完相簿內相片後由 `MIN(taken_at)` / `MAX(taken_at)` 自動推算回填。 |
+
+---
+
+### 2.4 `album_items` 相簿與相片多對多關聯表
+
+```sql
+CREATE TABLE IF NOT EXISTS album_items (
+    album_id TEXT NOT NULL,                     -- 對應 albums.id
+    media_id TEXT NOT NULL,                     -- 對應 media_items.id
+    added_at INTEGER NOT NULL,                  -- 本地建立關聯時間戳 (Unix Timestamp 秒數)
+    PRIMARY KEY (album_id, media_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_album_items_album_id ON album_items(album_id);
+CREATE INDEX IF NOT EXISTS idx_album_items_media_id ON album_items(media_id);
+```
+
+- 同一張相片（`media_id`）可同時存在於多本相簿（`album_id`），且與主時間軸共用同一筆 `media_items` 紀錄與 `./data/thumbs/<media_id>.webp` 縮圖檔，不重複佔用空間。
+
+---
+
 ## 3. 兩階段非破壞性寫入規範 (Non-Destructive Protocol)
 
 由於 Google Photos 資料由多個階段非同步提供：
@@ -132,6 +186,25 @@ ON CONFLICT(id) DO UPDATE SET
     location_name = CASE WHEN excluded.location_name != '' THEN excluded.location_name ELSE media_items.location_name END,
     raw_metadata  = CASE WHEN excluded.raw_metadata != '' THEN excluded.raw_metadata ELSE media_items.raw_metadata END,
     updated_at    = excluded.updated_at;
+```
+
+同理，更新 `albums` 相簿主表時亦須遵守非破壞性合併語法：
+
+```sql
+INSERT INTO albums (
+    id, title, product_url, cover_base_url, cover_thumb_path,
+    item_count, start_time, end_time, raw_metadata, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    title            = CASE WHEN excluded.title != '' THEN excluded.title ELSE albums.title END,
+    product_url      = CASE WHEN excluded.product_url != '' THEN excluded.product_url ELSE albums.product_url END,
+    cover_base_url   = CASE WHEN excluded.cover_base_url != '' THEN excluded.cover_base_url ELSE albums.cover_base_url END,
+    cover_thumb_path = CASE WHEN excluded.cover_thumb_path != '' THEN excluded.cover_thumb_path ELSE albums.cover_thumb_path END,
+    item_count       = CASE WHEN excluded.item_count > 0 THEN excluded.item_count ELSE albums.item_count END,
+    start_time       = CASE WHEN excluded.start_time > 0 THEN excluded.start_time ELSE albums.start_time END,
+    end_time         = CASE WHEN excluded.end_time > 0 THEN excluded.end_time ELSE albums.end_time END,
+    raw_metadata     = CASE WHEN excluded.raw_metadata != '' THEN excluded.raw_metadata ELSE albums.raw_metadata END,
+    updated_at       = excluded.updated_at;
 ```
 
 ---
@@ -217,7 +290,67 @@ WHERE filename = '';
 
 ---
 
-## 6. Python 讀取與處理範例代碼 (Agent Script Template)
+## 6. 相簿資料抽取與匯出指南 (Album Extraction Guide for RD / AI Agents)
+
+後續開發「匯出相簿資料 (`export`)」指令或撰寫外部自動化腳本時，可直接透過 `albums`、`album_items` 與 `media_items` 三表關聯抽取完整結構化資料。
+
+### 6.1 列出所有相簿與實際已索引張數
+```sql
+SELECT
+    a.id AS album_id,
+    a.title AS album_title,
+    a.product_url AS album_url,
+    a.cover_thumb_path,
+    a.item_count AS expected_count,
+    COUNT(ai.media_id) AS indexed_count,
+    CASE WHEN a.start_time > 0 THEN datetime(a.start_time, 'unixepoch', 'localtime') ELSE '' END AS start_date,
+    CASE WHEN a.end_time > 0 THEN datetime(a.end_time, 'unixepoch', 'localtime') ELSE '' END AS end_date
+FROM albums a
+LEFT JOIN album_items ai ON a.id = ai.album_id
+GROUP BY a.id
+ORDER BY a.start_time DESC, a.updated_at DESC;
+```
+
+### 6.2 依相簿 ID 或相簿名稱抽取該相簿內所有相片/影片完整清單
+```sql
+SELECT
+    a.id AS album_id,
+    a.title AS album_title,
+    m.id AS media_id,
+    m.filename,
+    m.media_type,
+    m.taken_at,
+    datetime(m.taken_at, 'unixepoch', 'localtime') AS taken_at_local,
+    m.width,
+    m.height,
+    m.duration,
+    m.camera_make,
+    m.camera_model,
+    m.latitude,
+    m.longitude,
+    m.location_name,
+    m.description,
+    m.thumb_path,
+    m.product_url,
+    m.base_url
+FROM album_items ai
+JOIN albums a ON ai.album_id = a.id
+JOIN media_items m ON ai.media_id = m.id
+WHERE a.id = ? OR a.title LIKE ?
+ORDER BY m.taken_at ASC, m.id ASC;
+```
+
+### 6.3 查詢某張相片所屬的所有相簿
+```sql
+SELECT a.id, a.title, a.product_url
+FROM album_items ai
+JOIN albums a ON ai.album_id = a.id
+WHERE ai.media_id = ?;
+```
+
+---
+
+## 7. Python 讀取、AI 回寫與相簿匯出範例代碼 (Agent Script Template)
 
 ```python
 import sqlite3
@@ -248,4 +381,28 @@ def update_ai_description(item_id: str, description: str):
             (item_id,)
         )
         conn.commit()
+
+def export_album_to_dict(album_id: str) -> dict:
+    """從本地 index.db 抽取指定相簿及其所有相片/影片 Metadata 供匯出使用"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        album_row = cursor.execute(
+            "SELECT * FROM albums WHERE id = ?", (album_id,)
+        ).fetchone()
+        if not album_row:
+            raise ValueError(f"Album not found: {album_id}")
+
+        items = cursor.execute(
+            """SELECT m.*
+               FROM album_items ai
+               JOIN media_items m ON ai.media_id = m.id
+               WHERE ai.album_id = ?
+               ORDER BY m.taken_at ASC, m.id ASC""",
+            (album_id,)
+        ).fetchall()
+
+        return {
+            "album": dict(album_row),
+            "items": [dict(row) for row in items],
+        }
 ```

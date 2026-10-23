@@ -25,19 +25,23 @@ import (
 type Config struct {
 	DataDir      string
 	Headless     bool
+	MaxAlbums    int
 	MaxItems     int
 	ForceFull    bool
 	FetchDetails bool
 }
 
 type Runner struct {
-	cfg        Config
-	store      *db.Store
-	httpClient *http.Client
-	mu         sync.Mutex
-	seenIDs    map[string]bool
-	savedCount int
-	hitCount   int
+	cfg            Config
+	store          *db.Store
+	httpClient     *http.Client
+	mu             sync.Mutex
+	seenIDs        map[string]bool
+	savedCount     int
+	hitCount       int
+	seenAlbums     map[string]db.Album
+	albumOrder     []string
+	currentAlbumID string
 }
 
 func NewRunner(cfg Config, store *db.Store) *Runner {
@@ -47,7 +51,8 @@ func NewRunner(cfg Config, store *db.Store) *Runner {
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
 		},
-		seenIDs: make(map[string]bool),
+		seenIDs:    make(map[string]bool),
+		seenAlbums: make(map[string]db.Album),
 	}
 }
 
@@ -239,6 +244,485 @@ func (r *Runner) Sync(ctx context.Context) error {
 	total, _ := r.store.Count()
 	log.Printf("🎉 同步完成！本次新增/更新 %d 張照片，本地資料庫共索引 %d 張照片。", r.savedCount, total)
 	return nil
+}
+
+func (r *Runner) SyncAlbums(ctx context.Context) error {
+	if err := os.MkdirAll(r.thumbsDir(), 0755); err != nil {
+		return err
+	}
+
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.UserDataDir(r.profileDir()),
+		chromedp.Flag("headless", r.cfg.Headless),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.WindowSize(1440, 1000),
+	)
+
+	allocCtx, cancel := chromedp.NewExecAllocator(ctx, opts...)
+	defer cancel()
+
+	taskCtx, cancelTask := chromedp.NewContext(allocCtx)
+	defer cancelTask()
+
+	var batchMu sync.Mutex
+	batchReqs := make(map[network.RequestID]bool)
+
+	chromedp.ListenTarget(taskCtx, func(ev any) {
+		switch e := ev.(type) {
+		case *network.EventRequestWillBeSent:
+			if strings.Contains(e.Request.URL, "batchexecute") {
+				batchMu.Lock()
+				batchReqs[e.RequestID] = true
+				batchMu.Unlock()
+			}
+		case *network.EventLoadingFinished:
+			batchMu.Lock()
+			isBatch := batchReqs[e.RequestID]
+			delete(batchReqs, e.RequestID)
+			batchMu.Unlock()
+
+			if isBatch {
+				go func(reqID network.RequestID) {
+					var body []byte
+					err := chromedp.Run(taskCtx, chromedp.ActionFunc(func(c context.Context) error {
+						var err error
+						body, err = network.GetResponseBody(reqID).Do(c)
+						return err
+					}))
+					if err == nil && len(body) > 0 {
+						raw := string(body)
+						r.mu.Lock()
+						curAlb := r.currentAlbumID
+						r.mu.Unlock()
+
+						if curAlb == "" {
+							for _, alb := range ParseAlbumsBatchExecute(raw) {
+								r.processAlbum(taskCtx, alb)
+							}
+						} else {
+							for _, alb := range ParseAlbumsBatchExecute(raw) {
+								if alb.ID == curAlb {
+									r.processAlbum(taskCtx, alb)
+								}
+							}
+							for _, it := range ParseBatchExecute(raw) {
+								if it.ID != curAlb {
+									r.processItem(taskCtx, it)
+								}
+							}
+						}
+					}
+				}(e.RequestID)
+			}
+		case *network.EventLoadingFailed:
+			batchMu.Lock()
+			delete(batchReqs, e.RequestID)
+			batchMu.Unlock()
+		}
+	})
+
+	log.Println("🚀 啟動相簿索引程序，正在載入 https://photos.google.com/albums ...")
+	if err := chromedp.Run(taskCtx,
+		network.Enable(),
+		chromedp.Navigate("https://photos.google.com/albums"),
+		chromedp.Sleep(4*time.Second),
+	); err != nil {
+		return fmt.Errorf("initial navigate to albums: %w", err)
+	}
+
+	var initScripts []string
+	_ = chromedp.Run(taskCtx, chromedp.Evaluate(
+		"Array.from(document.querySelectorAll('script')).map(s => s.textContent).filter(t => t.includes('AF1Qip'))",
+		&initScripts,
+	))
+	for _, scriptTxt := range initScripts {
+		for _, alb := range ParseAlbumsBatchExecute(scriptTxt) {
+			r.processAlbum(taskCtx, alb)
+		}
+	}
+
+	type scrollResult struct {
+		AtBottom bool `json:"atBottom"`
+	}
+
+	consecutiveBottom := 0
+	lastAlbumCount := 0
+	stalledSteps := 0
+
+	for step := 0; step < 150; step++ {
+		r.extractVisibleAlbumsDOM(taskCtx)
+
+		r.mu.Lock()
+		currentAlbums := len(r.albumOrder)
+		r.mu.Unlock()
+
+		if r.cfg.MaxAlbums > 0 && currentAlbums >= r.cfg.MaxAlbums {
+			log.Printf("⏹ 已達到設定的相簿抓取上限 (%d 本)，停止捲動相簿列表。", r.cfg.MaxAlbums)
+			break
+		}
+
+		var sRes scrollResult
+		_ = chromedp.Run(taskCtx, chromedp.Evaluate(`(() => {
+			const candidates = Array.from(document.querySelectorAll('*')).filter(el => {
+				const s = window.getComputedStyle(el);
+				return (s.overflowY === 'scroll' || s.overflowY === 'auto') && el.scrollHeight > el.clientHeight;
+			});
+			candidates.sort((a, b) => b.scrollHeight - a.scrollHeight);
+			let atBottom = false;
+			if (candidates.length > 0) {
+				const target = candidates[0];
+				target.scrollBy({ top: target.clientHeight * 0.85, behavior: 'smooth' });
+				atBottom = (target.scrollTop + target.clientHeight >= target.scrollHeight - 50);
+			}
+			window.scrollBy({ top: window.innerHeight * 0.85, behavior: 'smooth' });
+			return { atBottom: atBottom };
+		})()`, &sRes))
+
+		if currentAlbums == lastAlbumCount {
+			stalledSteps++
+		} else {
+			stalledSteps = 0
+			lastAlbumCount = currentAlbums
+		}
+
+		if sRes.AtBottom {
+			consecutiveBottom++
+			if consecutiveBottom >= 4 && stalledSteps >= 4 {
+				log.Printf("⏹ 已抵達相簿列表最底部，共發現 %d 本相簿。", currentAlbums)
+				break
+			}
+		} else {
+			consecutiveBottom = 0
+		}
+
+		jitter := time.Duration(650+rand.Intn(550)) * time.Millisecond
+		time.Sleep(jitter)
+	}
+
+	r.mu.Lock()
+	albums := make([]db.Album, 0, len(r.albumOrder))
+	for _, id := range r.albumOrder {
+		if r.cfg.MaxAlbums > 0 && len(albums) >= r.cfg.MaxAlbums {
+			break
+		}
+		albums = append(albums, r.seenAlbums[id])
+	}
+	r.mu.Unlock()
+
+	log.Printf("📚 共收集到 %d 本相簿，開始逐一巡覽建立相簿內相片索引...", len(albums))
+
+	totalLinkedItems := 0
+	for idx, alb := range albums {
+		if ctx.Err() != nil {
+			break
+		}
+
+		r.mu.Lock()
+		r.currentAlbumID = alb.ID
+		r.seenIDs = make(map[string]bool)
+		r.savedCount = 0
+		r.hitCount = 0
+		r.mu.Unlock()
+
+		albumURL := "https://photos.google.com/album/" + alb.ID
+		titleDisplay := alb.Title
+		if titleDisplay == "" {
+			titleDisplay = alb.ID[:14] + "..."
+		}
+		log.Printf("📂 [%d/%d] 正在進入相簿《%s》(%s)...", idx+1, len(albums), titleDisplay, albumURL)
+
+		if err := chromedp.Run(taskCtx,
+			chromedp.Navigate(albumURL),
+			chromedp.Sleep(3500*time.Millisecond),
+		); err != nil {
+			log.Printf("⚠️ 無法開啟相簿 %s: %v", alb.ID, err)
+			continue
+		}
+
+		r.extractAlbumHeaderDOM(taskCtx, alb.ID)
+
+		var albScripts []string
+		_ = chromedp.Run(taskCtx, chromedp.Evaluate(
+			"Array.from(document.querySelectorAll('script')).map(s => s.textContent).filter(t => t.includes('AF1Qip'))",
+			&albScripts,
+		))
+		for _, scriptTxt := range albScripts {
+			for _, parsedAlb := range ParseAlbumsBatchExecute(scriptTxt) {
+				if parsedAlb.ID == alb.ID {
+					r.processAlbum(taskCtx, parsedAlb)
+				}
+			}
+			for _, it := range ParseBatchExecute(scriptTxt) {
+				if it.ID != alb.ID {
+					r.processItem(taskCtx, it)
+				}
+			}
+		}
+
+		albBottom := 0
+		albLastSaved := 0
+		albStalled := 0
+
+		for step := 0; step < 300; step++ {
+			if r.shouldStop() {
+				break
+			}
+
+			r.extractVisibleDOM(taskCtx)
+
+			var sRes scrollResult
+			_ = chromedp.Run(taskCtx, chromedp.Evaluate(`(() => {
+				const candidates = Array.from(document.querySelectorAll('*')).filter(el => {
+					const s = window.getComputedStyle(el);
+					return (s.overflowY === 'scroll' || s.overflowY === 'auto') && el.scrollHeight > el.clientHeight;
+				});
+				candidates.sort((a, b) => b.scrollHeight - a.scrollHeight);
+				let atBottom = false;
+				if (candidates.length > 0) {
+					const target = candidates[0];
+					target.scrollBy({ top: target.clientHeight * 0.85, behavior: 'smooth' });
+					atBottom = (target.scrollTop + target.clientHeight >= target.scrollHeight - 50);
+				}
+				window.scrollBy({ top: window.innerHeight * 0.85, behavior: 'smooth' });
+				return { atBottom: atBottom };
+			})()`, &sRes))
+
+			r.mu.Lock()
+			currentSaved := r.savedCount
+			r.mu.Unlock()
+
+			if currentSaved == albLastSaved {
+				albStalled++
+			} else {
+				albStalled = 0
+				albLastSaved = currentSaved
+			}
+
+			if sRes.AtBottom {
+				albBottom++
+				if albBottom >= 4 && albStalled >= 4 {
+					break
+				}
+			} else {
+				albBottom = 0
+			}
+
+			jitter := time.Duration(600+rand.Intn(500)) * time.Millisecond
+			time.Sleep(jitter)
+		}
+
+		if r.cfg.FetchDetails {
+			log.Printf("🔍 正在補齊相簿《%s》內相片的原始檔名與 EXIF...", titleDisplay)
+			r.enrichDetailsViaUI(taskCtx)
+		}
+
+		_ = r.store.SyncAlbumStats(alb.ID)
+
+		r.mu.Lock()
+		totalLinkedItems += r.savedCount
+		r.mu.Unlock()
+	}
+
+	totalAlbums, _ := r.store.CountAlbums()
+	totalPhotos, _ := r.store.Count()
+	log.Printf("🎉 相簿索引完成！本次處理 %d 本相簿（關聯 %d 筆相片項目），本地資料庫共索引 %d 本相簿、%d 張相片。",
+		len(albums), totalLinkedItems, totalAlbums, totalPhotos)
+	return nil
+}
+
+type domAlbum struct {
+	Href      string `json:"href"`
+	ThumbURL  string `json:"thumbUrl"`
+	Title     string `json:"title"`
+	ItemCount int    `json:"itemCount"`
+}
+
+func (r *Runner) extractVisibleAlbumsDOM(ctx context.Context) {
+	var domAlbums []domAlbum
+	js := `(() => {
+		const links = Array.from(document.querySelectorAll('a[href*="/album/AF1Qip"]')).filter(a => {
+			const h = a.getAttribute('href') || '';
+			return !h.includes('/photo/');
+		});
+		return links.map(a => {
+			const container = a.closest('[role="listitem"]') || a.parentElement || a;
+			let thumb = '';
+			const img = container.querySelector('img');
+			if (img && img.src && (img.src.includes('googleusercontent.com') || img.src.includes('usercontent.google.com') || img.src.includes('ggpht.com'))) {
+				thumb = img.src;
+			} else {
+				const bgEl = container.querySelector('[data-latest-bg]');
+				if (bgEl && bgEl.getAttribute('data-latest-bg')) {
+					thumb = bgEl.getAttribute('data-latest-bg');
+				} else {
+					const all = Array.from(container.querySelectorAll('*'));
+					for (const el of all) {
+						const bg = window.getComputedStyle(el).backgroundImage;
+						if (bg && (bg.includes('googleusercontent.com') || bg.includes('usercontent.google.com'))) {
+							const m = bg.match(/url\(["']?(https:\/\/[^"')]+)["']?\)/);
+							if (m) { thumb = m[1]; break; }
+						}
+					}
+				}
+			}
+
+			let title = '';
+			let itemCount = 0;
+			const rawText = (container.innerText || a.innerText || a.getAttribute('aria-label') || '').trim();
+			const lines = rawText.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+
+			for (const line of lines) {
+				const countMatch = line.match(/(\d[\d,]*)\s*(?:個項目|項|張相片|items?|photos?)/i);
+				if (countMatch && itemCount === 0) {
+					itemCount = parseInt(countMatch[1].replace(/,/g, ''), 10) || 0;
+					continue;
+				}
+				if (!title && !/^(?:已共享|共享|Shared)$/i.test(line)) {
+					title = line;
+				}
+			}
+
+			return {
+				href: a.getAttribute('href') || '',
+				thumbUrl: thumb,
+				title: title,
+				itemCount: itemCount
+			};
+		});
+	})()`
+
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &domAlbums)); err != nil {
+		return
+	}
+
+	for _, d := range domAlbums {
+		idx := strings.Index(d.Href, "/album/")
+		if idx == -1 {
+			continue
+		}
+		id := strings.TrimPrefix(d.Href[idx:], "/album/")
+		if qIdx := strings.Index(id, "?"); qIdx != -1 {
+			id = id[:qIdx]
+		}
+		id = strings.TrimSuffix(id, "/")
+		if !reMediaKey.MatchString(id) {
+			continue
+		}
+
+		base := ""
+		if d.ThumbURL != "" {
+			base = strings.Split(d.ThumbURL, "=")[0]
+		}
+		r.processAlbum(ctx, db.Album{
+			ID:           id,
+			Title:        d.Title,
+			ProductURL:   "https://photos.google.com/album/" + id,
+			CoverBaseURL: base,
+			ItemCount:    d.ItemCount,
+		})
+	}
+}
+
+func (r *Runner) extractAlbumHeaderDOM(ctx context.Context, albumID string) {
+	var headerInfo struct {
+		Title     string `json:"title"`
+		ItemCount int    `json:"itemCount"`
+	}
+	js := `(() => {
+		let title = '';
+		const titleInput = document.querySelector('input[aria-label*="標題"], input[aria-label*="title" i], textarea[aria-label*="標題"], textarea[aria-label*="title" i]');
+		if (titleInput && titleInput.value) {
+			title = titleInput.value.trim();
+		}
+		if (!title) {
+			const h1 = document.querySelector('h1, [role="heading"][aria-level="1"]');
+			if (h1 && h1.innerText) {
+				title = h1.innerText.trim();
+			}
+		}
+		if (!title && document.title) {
+			const cleaned = document.title.replace(/\s*[-–—]\s*Google\s*(?:相簿|Photos).*$/i, '').trim();
+			if (cleaned && !/^Google\s*(?:相簿|Photos)$/i.test(cleaned)) {
+				title = cleaned;
+			}
+		}
+		let itemCount = 0;
+		const bodyText = document.body ? (document.body.innerText || '') : '';
+		const m = bodyText.match(/(\d[\d,]*)\s*(?:個項目|項|items?)/i);
+		if (m) {
+			itemCount = parseInt(m[1].replace(/,/g, ''), 10) || 0;
+		}
+		return { title: title, itemCount: itemCount };
+	})()`
+
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &headerInfo)); err != nil {
+		return
+	}
+	if headerInfo.Title != "" || headerInfo.ItemCount > 0 {
+		r.processAlbum(ctx, db.Album{
+			ID:         albumID,
+			Title:      headerInfo.Title,
+			ProductURL: "https://photos.google.com/album/" + albumID,
+			ItemCount:  headerInfo.ItemCount,
+		})
+	}
+}
+
+func (r *Runner) processAlbum(ctx context.Context, album db.Album) {
+	if album.ID == "" {
+		return
+	}
+
+	r.mu.Lock()
+	existing, seen := r.seenAlbums[album.ID]
+	if !seen {
+		if r.cfg.MaxAlbums > 0 && len(r.albumOrder) >= r.cfg.MaxAlbums {
+			r.mu.Unlock()
+			return
+		}
+		r.albumOrder = append(r.albumOrder, album.ID)
+	} else {
+		if album.Title == "" {
+			album.Title = existing.Title
+		}
+		if album.CoverBaseURL == "" {
+			album.CoverBaseURL = existing.CoverBaseURL
+		}
+		if album.CoverThumbPath == "" {
+			album.CoverThumbPath = existing.CoverThumbPath
+		}
+		if album.ItemCount == 0 {
+			album.ItemCount = existing.ItemCount
+		}
+		if album.StartTime == 0 {
+			album.StartTime = existing.StartTime
+		}
+		if album.EndTime == 0 {
+			album.EndTime = existing.EndTime
+		}
+	}
+	r.seenAlbums[album.ID] = album
+	r.mu.Unlock()
+
+	hasThumb := r.store.HasAlbumThumb(album.ID)
+	if !hasThumb && album.CoverBaseURL != "" {
+		relPath, err := r.downloadThumb(ctx, album.ID, album.CoverBaseURL)
+		if err == nil {
+			album.CoverThumbPath = relPath
+			r.mu.Lock()
+			r.seenAlbums[album.ID] = album
+			r.mu.Unlock()
+		}
+	}
+
+	if err := r.store.UpsertAlbum(album); err != nil {
+		log.Printf("⚠️ 寫入相簿資料庫失敗 (%s): %v", album.ID, err)
+		return
+	}
+
+	if !seen {
+		log.Printf("📚 發現相簿: 《%s》 (ID: %s, 預估項目: %d)", album.Title, album.ID[:14]+"...", album.ItemCount)
+	}
 }
 
 type domPhoto struct {
@@ -438,6 +922,11 @@ func (r *Runner) processItem(ctx context.Context, item db.MediaItem) {
 	}
 
 	r.mu.Lock()
+	curAlbumID := r.currentAlbumID
+	if curAlbumID != "" && item.ID == curAlbumID {
+		r.mu.Unlock()
+		return
+	}
 	if r.cfg.MaxItems > 0 && r.savedCount >= r.cfg.MaxItems {
 		r.mu.Unlock()
 		return
@@ -448,11 +937,16 @@ func (r *Runner) processItem(ctx context.Context, item db.MediaItem) {
 	r.mu.Unlock()
 
 	hasThumb := r.store.HasThumb(item.ID)
-	if hasThumb && !r.cfg.ForceFull && !alreadySeen {
+	isFullyIndexed := hasThumb
+	if curAlbumID != "" {
+		isFullyIndexed = hasThumb && r.store.HasAlbumItem(curAlbumID, item.ID)
+	}
+
+	if isFullyIndexed && !r.cfg.ForceFull && !alreadySeen {
 		r.mu.Lock()
 		r.hitCount++
 		r.mu.Unlock()
-	} else if !hasThumb && !alreadySeen {
+	} else if !isFullyIndexed && !alreadySeen {
 		r.mu.Lock()
 		r.hitCount = 0
 		r.mu.Unlock()
@@ -468,6 +962,12 @@ func (r *Runner) processItem(ctx context.Context, item db.MediaItem) {
 	if err := r.store.Upsert(item); err != nil {
 		log.Printf("⚠️ 寫入資料庫失敗 (%s): %v", item.ID, err)
 		return
+	}
+
+	if curAlbumID != "" {
+		if err := r.store.AddAlbumItem(curAlbumID, item.ID); err != nil {
+			log.Printf("⚠️ 寫入相簿關聯失敗 (%s -> %s): %v", curAlbumID, item.ID, err)
+		}
 	}
 
 	if !alreadySeen {

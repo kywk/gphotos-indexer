@@ -127,3 +127,108 @@ func TestStore_SearchFilters(t *testing.T) {
 		t.Errorf("相機型號搜尋錯誤: total=%d, err=%v", total, err)
 	}
 }
+
+func TestStore_AlbumsAndAlbumItems(t *testing.T) {
+	store := newTestStore(t)
+
+	albumID := "AF1QipAlbumTest0000001"
+
+	// 階段 1：從相簿列表頁抓到 ID、封面與初估數量，但尚無標題與起訖時間
+	if err := store.UpsertAlbum(Album{
+		ID:             albumID,
+		CoverBaseURL:   "https://lh3.googleusercontent.com/pw/AP1GczAlbumCover1",
+		CoverThumbPath: "thumbs/" + albumID + ".webp",
+		ItemCount:      2,
+	}); err != nil {
+		t.Fatalf("Stage 1 UpsertAlbum 失敗: %v", err)
+	}
+
+	if !store.HasAlbumThumb(albumID) {
+		t.Errorf("預期 HasAlbumThumb 為 true")
+	}
+
+	// 階段 2：進入相簿內頁補齊標題，此時未帶入 CoverThumbPath 與 ItemCount，驗證非破壞性合併
+	if err := store.UpsertAlbum(Album{
+		ID:    albumID,
+		Title: "2026 日本東京滑雪行",
+	}); err != nil {
+		t.Fatalf("Stage 2 UpsertAlbum 失敗: %v", err)
+	}
+
+	// 寫入兩張相片並關聯至該相簿，另有 1 張不屬於該相簿
+	items := []MediaItem{
+		{
+			ID:        "AF1QipAlbumPhoto0001",
+			Filename:  "IMG_001.JPG",
+			MediaType: "photo",
+			TakenAt:   1769900000,
+			ThumbPath: "thumbs/AF1QipAlbumPhoto0001.webp",
+		},
+		{
+			ID:        "AF1QipAlbumPhoto0002",
+			Filename:  "IMG_002.JPG",
+			MediaType: "photo",
+			TakenAt:   1770000000,
+			ThumbPath: "thumbs/AF1QipAlbumPhoto0002.webp",
+		},
+		{
+			ID:        "AF1QipOtherPhoto0003",
+			Filename:  "IMG_003.JPG",
+			MediaType: "photo",
+			TakenAt:   1770100000,
+		},
+	}
+	for _, it := range items {
+		if err := store.Upsert(it); err != nil {
+			t.Fatalf("Upsert media item 失敗: %v", err)
+		}
+	}
+
+	if err := store.AddAlbumItem(albumID, "AF1QipAlbumPhoto0001"); err != nil {
+		t.Fatalf("AddAlbumItem 1 失敗: %v", err)
+	}
+	if err := store.AddAlbumItem(albumID, "AF1QipAlbumPhoto0002"); err != nil {
+		t.Fatalf("AddAlbumItem 2 失敗: %v", err)
+	}
+
+	if !store.HasAlbumItem(albumID, "AF1QipAlbumPhoto0001") {
+		t.Errorf("預期 HasAlbumItem 為 true")
+	}
+	if store.HasAlbumItem(albumID, "AF1QipOtherPhoto0003") {
+		t.Errorf("預期未關聯的相片 HasAlbumItem 為 false")
+	}
+
+	if err := store.SyncAlbumStats(albumID); err != nil {
+		t.Fatalf("SyncAlbumStats 失敗: %v", err)
+	}
+
+	albums, err := store.ListAlbums()
+	if err != nil || len(albums) != 1 {
+		t.Fatalf("預期 ListAlbums 回傳 1 筆相簿, got %d, err=%v", len(albums), err)
+	}
+	gotAlb := albums[0]
+	if gotAlb.Title != "2026 日本東京滑雪行" {
+		t.Errorf("相簿標題錯誤: got %q", gotAlb.Title)
+	}
+	if gotAlb.CoverThumbPath != "thumbs/"+albumID+".webp" {
+		t.Errorf("階段 1 的 CoverThumbPath 被洗掉了: got %q", gotAlb.CoverThumbPath)
+	}
+	if gotAlb.IndexedCount != 2 || gotAlb.ItemCount != 2 {
+		t.Errorf("相簿項目統計錯誤: ItemCount=%d, IndexedCount=%d", gotAlb.ItemCount, gotAlb.IndexedCount)
+	}
+	if gotAlb.StartTime != 1769900000 || gotAlb.EndTime != 1770000000 {
+		t.Errorf("相簿起訖時間統計錯誤: StartTime=%d, EndTime=%d", gotAlb.StartTime, gotAlb.EndTime)
+	}
+
+	// 測試透過 AlbumID 過濾相片
+	byAlbum, total, err := store.Search(SearchFilter{AlbumID: albumID})
+	if err != nil || total != 2 || len(byAlbum) != 2 {
+		t.Fatalf("依 AlbumID 過濾錯誤: 預期 2 筆, 實際 total=%d, err=%v", total, err)
+	}
+
+	// 測試透過關鍵字搜尋相簿名稱也能找到相簿內相片
+	byAlbumTitle, total, err := store.Search(SearchFilter{Query: "東京滑雪"})
+	if err != nil || total != 2 || len(byAlbumTitle) != 2 {
+		t.Fatalf("依相簿標題關鍵字搜尋相片錯誤: 預期 2 筆, 實際 total=%d, err=%v", total, err)
+	}
+}

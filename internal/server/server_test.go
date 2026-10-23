@@ -28,6 +28,19 @@ func TestServer_APISearchAndIndex(t *testing.T) {
 		MediaType:   "photo",
 		TakenAt:     1792281600, // 2026-10-18
 	})
+	_ = store.Upsert(db.MediaItem{
+		ID:          "AF1QipServerTest0002",
+		Filename:    "IMG_20261019_Cat.JPG",
+		Description: "可愛的貓咪照片",
+		MediaType:   "photo",
+		TakenAt:     1792368000, // 2026-10-19
+	})
+	_ = store.UpsertAlbum(db.Album{
+		ID:        "AF1QipServerAlbum001",
+		Title:     "寵物精選相簿",
+		ItemCount: 1,
+	})
+	_ = store.AddAlbumItem("AF1QipServerAlbum001", "AF1QipServerTest0001")
 
 	srv := New(store, tmpDir, 0)
 
@@ -54,7 +67,43 @@ func TestServer_APISearchAndIndex(t *testing.T) {
 		t.Errorf("檔名不符: got %q", resp.Items[0].Filename)
 	}
 
-	// 2. 測試 GET / 首頁 HTML Embed 輸出
+	// 2. 測試 GET /api/albums 相簿列表 API
+	reqAlbums := httptest.NewRequest(http.MethodGet, "/api/albums", nil)
+	recAlbums := httptest.NewRecorder()
+	srv.handleAlbums(recAlbums, reqAlbums)
+
+	if recAlbums.Code != http.StatusOK {
+		t.Fatalf("預期 /api/albums HTTP 200, 實際為 %d", recAlbums.Code)
+	}
+
+	var albumsResp struct {
+		Total int        `json:"total"`
+		Items []db.Album `json:"items"`
+	}
+	if err := json.Unmarshal(recAlbums.Body.Bytes(), &albumsResp); err != nil {
+		t.Fatalf("解析 /api/albums JSON 失敗: %v", err)
+	}
+	if albumsResp.Total != 1 || len(albumsResp.Items) != 1 || albumsResp.Items[0].Title != "寵物精選相簿" {
+		t.Errorf("/api/albums 回傳內容不符預期: %+v", albumsResp)
+	}
+
+	// 3. 測試 GET /api/photos?album_id=... 依相簿過濾 API
+	reqByAlbum := httptest.NewRequest(http.MethodGet, "/api/photos?album_id=AF1QipServerAlbum001", nil)
+	recByAlbum := httptest.NewRecorder()
+	srv.handleSearch(recByAlbum, reqByAlbum)
+
+	var albumPhotosResp struct {
+		Total int            `json:"total"`
+		Items []db.MediaItem `json:"items"`
+	}
+	if err := json.Unmarshal(recByAlbum.Body.Bytes(), &albumPhotosResp); err != nil {
+		t.Fatalf("解析依相簿過濾 JSON 失敗: %v", err)
+	}
+	if albumPhotosResp.Total != 1 || len(albumPhotosResp.Items) != 1 || albumPhotosResp.Items[0].ID != "AF1QipServerTest0001" {
+		t.Errorf("依 album_id 過濾結果不符預期: %+v", albumPhotosResp)
+	}
+
+	// 4. 測試 GET / 首頁 HTML Embed 輸出
 	reqHTML := httptest.NewRequest(http.MethodGet, "/", nil)
 	recHTML := httptest.NewRecorder()
 	srv.handleIndex(recHTML, reqHTML)

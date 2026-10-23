@@ -1,7 +1,7 @@
 BINARY_NAME=gphotos-indexer
 DATA_DIR=./data
 
-.PHONY: all tidy vet test check build auth sync serve clean
+.PHONY: all tidy vet test check build auth sync albums serve clean
 
 all: check
 
@@ -24,6 +24,9 @@ auth: build
 
 sync: build
 	./bin/$(BINARY_NAME) sync -data $(DATA_DIR) -max-items 200
+
+albums: build
+	./bin/$(BINARY_NAME) albums -data $(DATA_DIR)
 
 serve: build
 	./bin/$(BINARY_NAME) serve -data $(DATA_DIR) -port 8080
