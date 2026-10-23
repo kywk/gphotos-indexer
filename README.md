@@ -29,11 +29,14 @@ gphotos-indexer/
 ├── go.mod                           # Go Module 定義 (純 Go SQLite + chromedp)
 ├── cmd/
 │   └── gphotos-indexer/
-│       └── main.go                  # CLI 入口 (auth, sync, albums, serve, version)
+│       └── main.go                  # CLI 入口 (init, auth, sync, albums, serve, version)
 └── internal/
     ├── db/
     │   ├── sqlite.go                # SQLite + FTS5 全文檢索、相簿關聯與兩階段非破壞性 Upsert
     │   └── sqlite_test.go           # 資料庫欄位合併、相簿關聯與複合過濾單元測試
+    ├── scaffold/
+    │   ├── scaffold.go              # 工作目錄與腳手架模板產生器 (init 子命令)
+    │   └── scaffold_test.go         # 模板建立與覆寫行為測試
     ├── scraper/
     │   ├── browser.go               # Chromedp 封包攔截、時間軸/相簿自動捲動與 WebP 縮圖下載
     │   ├── parser.go                # batchexecute 封包剝殼與相片/影片/相簿遞迴特徵提取器
@@ -93,6 +96,11 @@ make serve
 - 支援鍵盤 `←` / `→` 切換上下張、`Esc` 關閉視窗，或點擊「在 Google Photos 開啟」直接跳轉雲端原圖。
 
 ## CLI 命令與參數一覽
+
+### `gphotos-indexer init`
+初始化新的相片索引專案目錄（自動建立 `data/` 資料夾、`.gitignore`、開箱即用的 `Makefile` 與操作說明 `README.md`）。
+- 位置參數或 `-dir`（預設 `"."`）：指定目標專案目錄名稱或路徑（例如 `gphotos-indexer init kywk.id`）。
+- `-force`（預設 `false`）：強制覆寫目錄中已存在的模板檔案。
 
 ### `gphotos-indexer auth`
 啟動有頭 Chrome 視窗完成 Google 帳號登入並保存 Session。

@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/local/gphotos-indexer/internal/db"
+	"github.com/local/gphotos-indexer/internal/scaffold"
 	"github.com/local/gphotos-indexer/internal/scraper"
 	"github.com/local/gphotos-indexer/internal/server"
 )
@@ -38,6 +39,27 @@ func main() {
 	}()
 
 	switch subcmd {
+	case "init":
+		fs := flag.NewFlagSet("init", flag.ExitOnError)
+		dir := fs.String("dir", "", "目標工作目錄路徑 (預設為當前目錄或第一個位置參數)")
+		force := fs.Bool("force", false, "強制覆寫既有檔案")
+		_ = fs.Parse(os.Args[2:])
+
+		targetDir := *dir
+		if targetDir == "" && fs.NArg() > 0 {
+			targetDir = fs.Arg(0)
+		}
+		if targetDir == "" {
+			targetDir = "."
+		}
+
+		if err := scaffold.Run(scaffold.Config{
+			TargetDir: targetDir,
+			Force:     *force,
+		}); err != nil {
+			log.Fatalf("Init 失敗: %v", err)
+		}
+
 	case "auth":
 		fs := flag.NewFlagSet("auth", flag.ExitOnError)
 		dataDir := fs.String("data", "./data", "資料與 Chrome Profile 儲存目錄")
@@ -140,6 +162,7 @@ func printUsage() {
 	fmt.Println("  gphotos-indexer <command> [flags]")
 	fmt.Println("")
 	fmt.Println("可用子命令:")
+	fmt.Println("  init    初始化新的相片索引工作目錄 (產生 Makefile, .gitignore 與 README)")
 	fmt.Println("  auth    啟動有頭 Chrome 視窗完成 Google 帳號登入並保存 Session")
 	fmt.Println("  sync    攔截 batchexecute 與 DOM，自動抓取 WebP 縮圖與 Metadata 存入 SQLite")
 	fmt.Println("  albums  針對所有個人相簿建立索引（包含相簿清單與相簿內相片關聯）")
