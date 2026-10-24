@@ -415,6 +415,15 @@ func extractFieldsFromAlbumArray(arr []any, album *db.Album) bool {
 		}
 	}
 
+	// 封面優先取 arr[1] 的封面槽位（[[url,w,h]]、[url,w,h] 或 [url]），
+	// 避免深層遞迴先命中序列化順序靠前的無關 URL（如擁有者頭像或裝飾圖）。
+	// 槽位為空時才由 scanAlbumSubtree 深層掃描補齊。
+	if len(arr) > 1 {
+		if slotURL := firstGoogleURLInSlot(arr[1]); slotURL != "" {
+			album.CoverBaseURL = slotURL
+		}
+	}
+
 	scanAlbumSubtree(arr, album)
 
 	// 相簿內頁相片節點夾帶父相簿上下文時，arr[1] 為 [url, w, h] 相片元組，
@@ -458,6 +467,26 @@ func isPhotoMediaTuple(v any) bool {
 	w, ok1 := toInt(t[1])
 	h, ok2 := toInt(t[2])
 	return ok1 && ok2 && w > 0 && w < 50000 && h > 0 && h < 50000
+}
+
+// firstGoogleURLInSlot 在封面槽位（arr[1]）內依序尋找第一個 Google 圖片 URL。
+// 槽位形狀為 [[url,w,h]]、[url,w,h]、[url] 或裸網址字串；非 URL 槽位回傳空字串。
+func firstGoogleURLInSlot(v any) string {
+	switch t := v.(type) {
+	case string:
+		if isGoogleMediaURL(t) {
+			parts := strings.Split(t, "=")
+			return parts[0]
+		}
+		return ""
+	case []any:
+		for _, child := range t {
+			if u := firstGoogleURLInSlot(child); u != "" {
+				return u
+			}
+		}
+	}
+	return ""
 }
 
 func scanAlbumSubtree(node any, album *db.Album) {

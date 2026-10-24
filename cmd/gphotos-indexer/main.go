@@ -239,6 +239,24 @@ func runDoctor(store *db.Store, dataDir string) error {
 		}
 		fmt.Printf("      - 《%s》×%d (已收錄 %d 筆): %s\n", g.Title, g.Count, g.IndexedTotal, strings.Join(shown, ", "))
 	}
+	report(len(rep.DuplicateCovers) == 0, "同圖封面群組 (不同相簿共用完全相同封面): %d 組", len(rep.DuplicateCovers))
+	for _, g := range rep.DuplicateCovers {
+		shown := g.AlbumIDs
+		if len(shown) > 5 {
+			shown = shown[:5]
+		}
+		fmt.Printf("      - #%s ×%d: %s\n", g.Hash[:12], g.Count, strings.Join(shown, ", "))
+	}
+	if len(rep.CoverNotInMembers) > 0 {
+		fmt.Printf("  ℹ️ 封面不在相簿成員內 (僅供參考，索引未完成時可能誤報): %d 本\n", len(rep.CoverNotInMembers))
+		for i, id := range rep.CoverNotInMembers {
+			if i >= 10 {
+				fmt.Printf("      ...還有 %d 本未列出\n", len(rep.CoverNotInMembers)-10)
+				break
+			}
+			fmt.Printf("      - %s\n", id)
+		}
+	}
 	report(len(rep.ZeroIndexedIDs) == 0, "零索引相簿 (未收錄半張相片): %d 本", len(rep.ZeroIndexedIDs))
 	report(rep.OrphanLinksAlbum == 0 && rep.OrphanLinksMedia == 0,
 		"孤兒關聯: 相簿側 %d / 相片側 %d", rep.OrphanLinksAlbum, rep.OrphanLinksMedia)

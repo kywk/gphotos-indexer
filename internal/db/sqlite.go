@@ -1,11 +1,14 @@
 package db
 
 import (
+	"crypto/md5"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -315,29 +318,40 @@ type DuplicateTitleGroup struct {
 	AlbumIDs     []string `json:"album_ids"`
 }
 
+// DuplicateCoverGroup 代表封面檔案位元組完全相同的可疑相簿群組。
+// 不同相簿共用完全相同的封面位元組，多為列表頁抓取時歸屬錯誤所致。
+type DuplicateCoverGroup struct {
+	Hash     string   `json:"hash"`
+	Count    int      `json:"count"`
+	AlbumIDs []string `json:"album_ids"`
+	Titles   []string `json:"titles"`
+}
+
 // DoctorReport 為 doctor 指令的唯讀健檢結果，不修改任何資料。
 type DoctorReport struct {
-	AlbumsTotal      int                   `json:"albums_total"`
-	MediaTotal       int                   `json:"media_total"`
-	LinksTotal       int                   `json:"links_total"`
-	CrossTableIDs    []string              `json:"cross_table_ids"`
-	EmptyTitleIDs    []string              `json:"empty_title_ids"`
-	ErrorTitleIDs    []string              `json:"error_title_ids"`
-	ZeroIndexedIDs   []string              `json:"zero_indexed_ids"`
-	DupZeroIndexRows int                   `json:"dup_zero_index_rows"`
-	DuplicateTitles  []DuplicateTitleGroup `json:"duplicate_titles"`
-	OrphanLinksAlbum int                   `json:"orphan_links_album"`
-	OrphanLinksMedia int                   `json:"orphan_links_media"`
-	MissingThumbs    []string              `json:"missing_thumbs"`
-	MissingThumbMore int                   `json:"missing_thumbs_more"`
-	MissingFilename  int                   `json:"missing_filename"`
-	MissingDims      int                   `json:"missing_dims"`
+	AlbumsTotal       int                   `json:"albums_total"`
+	MediaTotal        int                   `json:"media_total"`
+	LinksTotal        int                   `json:"links_total"`
+	CrossTableIDs     []string              `json:"cross_table_ids"`
+	EmptyTitleIDs     []string              `json:"empty_title_ids"`
+	ErrorTitleIDs     []string              `json:"error_title_ids"`
+	ZeroIndexedIDs    []string              `json:"zero_indexed_ids"`
+	DupZeroIndexRows  int                   `json:"dup_zero_index_rows"`
+	DuplicateTitles   []DuplicateTitleGroup `json:"duplicate_titles"`
+	OrphanLinksAlbum  int                   `json:"orphan_links_album"`
+	OrphanLinksMedia  int                   `json:"orphan_links_media"`
+	MissingThumbs     []string              `json:"missing_thumbs"`
+	MissingThumbMore  int                   `json:"missing_thumbs_more"`
+	MissingFilename   int                   `json:"missing_filename"`
+	MissingDims       int                   `json:"missing_dims"`
+	DuplicateCovers   []DuplicateCoverGroup `json:"duplicate_covers"`
+	CoverNotInMembers []string              `json:"cover_not_in_members"`
 }
 
 // HasIssues 回報是否存在需要處理的問題。
 func (r DoctorReport) HasIssues() bool {
 	return len(r.CrossTableIDs) > 0 || len(r.EmptyTitleIDs) > 0 || len(r.ErrorTitleIDs) > 0 ||
-		len(r.ZeroIndexedIDs) > 0 || len(r.DuplicateTitles) > 0 ||
+		len(r.ZeroIndexedIDs) > 0 || len(r.DuplicateTitles) > 0 || len(r.DuplicateCovers) > 0 ||
 		r.OrphanLinksAlbum > 0 || r.OrphanLinksMedia > 0 ||
 		len(r.MissingThumbs) > 0 || r.MissingThumbMore > 0
 }
@@ -473,6 +487,10 @@ func (s *Store) Doctor(dataDir string) (DoctorReport, error) {
 		}
 	}
 
+	if dataDir != "" {
+		rep.DuplicateCovers, rep.CoverNotInMembers = detectCoverIssues(s.db, dataDir)
+	}
+
 	if err = s.db.QueryRow("SELECT COUNT(*) FROM media_items WHERE filename = ''").Scan(&rep.MissingFilename); err != nil {
 		return rep, err
 	}
@@ -480,6 +498,116 @@ func (s *Store) Doctor(dataDir string) (DoctorReport, error) {
 		return rep, err
 	}
 	return rep, nil
+}
+
+// detectCoverIssues 唯讀比對相簿封面檔案位元組，回傳兩類可疑狀況：
+//  1. 位元組完全相同的封面分組（不同相簿共用同一封面多為列表頁歸屬錯誤）；
+//  2. 封面位元組不在該相簿任何成員縮圖之中的相簿（封面應為其成員之一）。
+//
+// 第二類僅供參考：相簿索引尚未完成（成員為部分或零）時可能誤報。
+func detectCoverIssues(sqlDB *sql.DB, dataDir string) ([]DuplicateCoverGroup, []string) {
+	type coverRow struct {
+		id    string
+		title string
+		path  string
+	}
+	rows, err := sqlDB.Query("SELECT id, title, cover_thumb_path FROM albums WHERE cover_thumb_path != '' ORDER BY id")
+	if err != nil {
+		return nil, nil
+	}
+	var covers []coverRow
+	for rows.Next() {
+		var c coverRow
+		if err := rows.Scan(&c.id, &c.title, &c.path); err == nil && c.path != "" {
+			covers = append(covers, c)
+		}
+	}
+	rows.Close()
+
+	fileHash := func(rel string) string {
+		b, err := os.ReadFile(filepath.Join(dataDir, filepath.FromSlash(rel)))
+		if err != nil || len(b) == 0 {
+			return ""
+		}
+		sum := md5.Sum(b)
+		return hex.EncodeToString(sum[:])
+	}
+
+	coverHash := make(map[string]string, len(covers))
+	grouped := make(map[string][]coverRow)
+	for _, c := range covers {
+		h := fileHash(c.path)
+		if h == "" {
+			continue
+		}
+		coverHash[c.id] = h
+		grouped[h] = append(grouped[h], c)
+	}
+
+	var dupGroups []DuplicateCoverGroup
+	for h, members := range grouped {
+		if len(members) < 2 {
+			continue
+		}
+		g := DuplicateCoverGroup{Hash: h, Count: len(members)}
+		for _, m := range members {
+			g.AlbumIDs = append(g.AlbumIDs, m.id)
+			g.Titles = append(g.Titles, m.title)
+		}
+		dupGroups = append(dupGroups, g)
+	}
+	sort.Slice(dupGroups, func(i, j int) bool {
+		if dupGroups[i].Count != dupGroups[j].Count {
+			return dupGroups[i].Count > dupGroups[j].Count
+		}
+		return dupGroups[i].Hash < dupGroups[j].Hash
+	})
+
+	// 成員縮圖雜湊預先計算一次，避免重複讀檔
+	memberHash := make(map[string]string)
+	mediaRows, err := sqlDB.Query("SELECT id, thumb_path FROM media_items WHERE thumb_path != ''")
+	if err == nil {
+		for mediaRows.Next() {
+			var id, tp string
+			if err := mediaRows.Scan(&id, &tp); err == nil && tp != "" {
+				if h := fileHash(tp); h != "" {
+					memberHash[id] = h
+				}
+			}
+		}
+		mediaRows.Close()
+	}
+
+	var notInMembers []string
+	for _, c := range covers {
+		h, ok := coverHash[c.id]
+		if !ok {
+			continue
+		}
+		linkRows, err := sqlDB.Query("SELECT media_id FROM album_items WHERE album_id = ?", c.id)
+		if err != nil {
+			continue
+		}
+		linked := 0
+		matched := false
+		for linkRows.Next() {
+			var mid string
+			if err := linkRows.Scan(&mid); err != nil {
+				continue
+			}
+			linked++
+			if mh, ok := memberHash[mid]; ok && mh == h {
+				matched = true
+			}
+		}
+		linkRows.Close()
+		if linked > 0 && !matched {
+			notInMembers = append(notInMembers, c.id)
+		}
+	}
+	sort.Strings(notInMembers)
+
+	return dupGroups, notInMembers
 }
 
 // RebuildResult 為 rebuild 指令的離線修復結果（僅整理相簿層，不動相片本體）。

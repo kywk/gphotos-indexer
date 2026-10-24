@@ -259,3 +259,47 @@ func TestParseAlbumsBatchExecute_RejectsPhotoInAlbumContext(t *testing.T) {
 		t.Errorf("真實相簿項目數應為 15, got %d", albums2[0].ItemCount)
 	}
 }
+
+func TestParseAlbumsBatchExecute_CoverPrefersSlotOverTrailingDecoy(t *testing.T) {
+	// 封面必須取自 arr[1] 槽位，而非陣列深處的其他 URL：
+	// 相簿陣列尾端夾帶一個無關的 Google 圖片 URL 時，封面仍應為槽位內的封面。
+	mockResponse := ")]}'\n\n" +
+		"100\n" +
+		"[" +
+		"  [\"wrb.fr\", \"Z5xsfc\", \"[[[\\\"AF1QipMockCoverSlot0001\\\",[[\\\"https://lh3.googleusercontent.com/pw/AP1GczSlotCover=w400-h400-c\\\",1200,900]],\\\"標題A\\\",48,\\\"https://lh3.googleusercontent.com/pw/AP1GczDecoyNotCover\\\",{\\\"72930366\\\":[48,\\\"標題A\\\",[1483225200000,1485907200000]]}]]]\", null, null, null, \"generic\"]" +
+		"]\n"
+
+	albums := ParseAlbumsBatchExecute(mockResponse)
+	if len(albums) != 1 {
+		t.Fatalf("預期解析出 1 筆相簿，實際取得 %d 筆", len(albums))
+	}
+	got := albums[0]
+	if got.CoverBaseURL != "https://lh3.googleusercontent.com/pw/AP1GczSlotCover" {
+		t.Errorf("封面應為槽位封面，實際為 %q", got.CoverBaseURL)
+	}
+	if got.Title != "標題A" || got.ItemCount != 48 {
+		t.Errorf("標題/數量解析錯誤: Title=%q ItemCount=%d", got.Title, got.ItemCount)
+	}
+}
+
+func TestParseAlbumsBatchExecute_CoverDirectTupleWithDecoy(t *testing.T) {
+	// 直接元組形狀 [id, [url,w,h], title, count] 尾端夾帶無關 URL 時，
+	// 封面仍應為槽位內的 URL。
+	mockResponse := ")]}'\n\n" +
+		"100\n" +
+		"[" +
+		"  [\"wrb.fr\", \"Z5xsfc\", \"[[[\\\"AF1QipMockCoverSlot0002\\\",[\\\"https://lh3.googleusercontent.com/pw/AP1GczSlotCover2\\\",1200,900],\\\"家庭聚餐\\\",15,[1759000000000,1759086400000],\\\"https://lh3.googleusercontent.com/pw/AP1GczDecoyNotCover2\\\"]]]\", null, null, null, \"generic\"]" +
+		"]\n"
+
+	albums := ParseAlbumsBatchExecute(mockResponse)
+	if len(albums) != 1 {
+		t.Fatalf("預期解析出 1 筆相簿，實際取得 %d 筆", len(albums))
+	}
+	got := albums[0]
+	if got.CoverBaseURL != "https://lh3.googleusercontent.com/pw/AP1GczSlotCover2" {
+		t.Errorf("封面應為槽位封面，實際為 %q", got.CoverBaseURL)
+	}
+	if got.Title != "家庭聚餐" || got.ItemCount != 15 {
+		t.Errorf("標題/數量解析錯誤: Title=%q ItemCount=%d", got.Title, got.ItemCount)
+	}
+}

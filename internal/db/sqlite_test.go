@@ -1,6 +1,7 @@
 package db
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -430,5 +431,84 @@ func TestStore_Rebuild(t *testing.T) {
 	}
 	if len(rep.CrossTableIDs) != 0 || rep.OrphanLinksAlbum != 0 || rep.OrphanLinksMedia != 0 || len(rep.DuplicateTitles) != 0 {
 		t.Errorf("Rebuild 後仍有殘留問題: %+v", rep)
+	}
+}
+
+func TestStore_DoctorDuplicateCovers(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "test_index.db")
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("無法開啟測試用 SQLite: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	writeThumb := func(rel string, content []byte) {
+		p := filepath.Join(dataDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatalf("建立縮圖目錄失敗: %v", err)
+		}
+		if err := os.WriteFile(p, content, 0644); err != nil {
+			t.Fatalf("寫入縮圖失敗: %v", err)
+		}
+	}
+
+	sameCover := []byte("fake-webp-same-cover-bytes")
+	otherCover := []byte("fake-webp-other-cover-bytes")
+	memberOther := []byte("fake-webp-member-other-bytes")
+
+	// 相簿 A：封面與其成員 P 位元組相同（正確），但與相簿 B 共用同一封面（可疑）
+	// 相簿 B：封面與其成員 Q 不同（錯誤）且與 A 撞圖
+	// 相簿 C：獨立封面且無成員，不應被標記
+	albums := []Album{
+		{ID: "AF1QipDoctorCoverA00001", Title: "相簿A", CoverThumbPath: "thumbs/AF1QipDoctorCoverA00001.webp"},
+		{ID: "AF1QipDoctorCoverB00002", Title: "相簿B", CoverThumbPath: "thumbs/AF1QipDoctorCoverB00002.webp"},
+		{ID: "AF1QipDoctorCoverC00003", Title: "相簿C", CoverThumbPath: "thumbs/AF1QipDoctorCoverC00003.webp"},
+	}
+	writeThumb(albums[0].CoverThumbPath, sameCover)
+	writeThumb(albums[1].CoverThumbPath, sameCover)
+	writeThumb(albums[2].CoverThumbPath, otherCover)
+	for _, a := range albums {
+		if err := store.UpsertAlbum(a); err != nil {
+			t.Fatalf("UpsertAlbum 失敗: %v", err)
+		}
+	}
+
+	members := []MediaItem{
+		{ID: "AF1QipDoctorCoverP00001", ThumbPath: "thumbs/AF1QipDoctorCoverP00001.webp"},
+		{ID: "AF1QipDoctorCoverQ00002", ThumbPath: "thumbs/AF1QipDoctorCoverQ00002.webp"},
+	}
+	writeThumb(members[0].ThumbPath, sameCover)
+	writeThumb(members[1].ThumbPath, memberOther)
+	for _, m := range members {
+		if err := store.Upsert(m); err != nil {
+			t.Fatalf("Upsert 相片失敗: %v", err)
+		}
+	}
+	if err := store.AddAlbumItem(albums[0].ID, members[0].ID); err != nil {
+		t.Fatalf("AddAlbumItem 失敗: %v", err)
+	}
+	if err := store.AddAlbumItem(albums[1].ID, members[1].ID); err != nil {
+		t.Fatalf("AddAlbumItem 失敗: %v", err)
+	}
+
+	rep, err := store.Doctor(dataDir)
+	if err != nil {
+		t.Fatalf("Doctor 失敗: %v", err)
+	}
+	if len(rep.DuplicateCovers) != 1 {
+		t.Fatalf("應偵測 1 組同圖封面，實際 %d 組: %+v", len(rep.DuplicateCovers), rep.DuplicateCovers)
+	}
+	g := rep.DuplicateCovers[0]
+	if g.Count != 2 {
+		t.Errorf("同圖封面群組應為 2 本，實際 %d", g.Count)
+	}
+	if len(rep.CoverNotInMembers) != 1 || rep.CoverNotInMembers[0] != albums[1].ID {
+		t.Errorf("僅相簿 B 封面不在成員內，實際為 %v", rep.CoverNotInMembers)
+	}
+	if !rep.HasIssues() {
+		t.Errorf("同圖封面應被視為問題，HasIssues 應為 true")
 	}
 }

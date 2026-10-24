@@ -620,19 +620,33 @@ func (r *Runner) extractVisibleAlbumsDOM(ctx context.Context) {
 		});
 		return links.map(a => {
 			const container = a.closest('[role="listitem"]') || a.parentElement || a;
-			// 封面歸屬必須優先取連結自身內的 <img>，避免共用容器時多本相簿抓到同一張首圖
+			// 封面歸屬鐵律：連結自身內的 <img> 才可信；共用容器（內含多本相簿連結，
+			// 常見於虛擬化網格尚未載入各卡片圖片時）一律不可作為封面來源，
+			// 否則多本相簿會同時抓到第一張已載入的首圖造成封面重複。
+			const albumLinksInContainer = container.querySelectorAll
+				? container.querySelectorAll('a[href*="/album/AF1Qip"]').length : 1;
+			const exclusive = albumLinksInContainer <= 1;
+			const isGoogleImg = (src) => src && !src.startsWith('data:') &&
+				(src.includes('googleusercontent.com') || src.includes('usercontent.google.com') || src.includes('ggpht.com'));
 			let thumb = '';
-			const ownImg = a.querySelector('img');
-			const scopedImg = (ownImg && ownImg.src && (ownImg.src.includes('googleusercontent.com') || ownImg.src.includes('usercontent.google.com') || ownImg.src.includes('ggpht.com'))) ? ownImg : container.querySelector('img');
-			if (scopedImg && scopedImg.src && (scopedImg.src.includes('googleusercontent.com') || scopedImg.src.includes('usercontent.google.com') || scopedImg.src.includes('ggpht.com'))) {
-				thumb = scopedImg.src;
-			} else {
-				const bgEl = a.querySelector('[data-latest-bg]') || container.querySelector('[data-latest-bg]');
+			const ownImgs = Array.from(a.querySelectorAll('img'));
+			for (const img of ownImgs) {
+				const src = img.currentSrc || img.src || '';
+				if (isGoogleImg(src)) { thumb = src; break; }
+			}
+			if (!thumb && exclusive) {
+				const scopedImg = container.querySelector('img');
+				const src = scopedImg ? (scopedImg.currentSrc || scopedImg.src || '') : '';
+				if (isGoogleImg(src)) { thumb = src; }
+			}
+			if (!thumb) {
+				const bgEl = a.querySelector('[data-latest-bg]') || (exclusive ? container.querySelector('[data-latest-bg]') : null);
 				if (bgEl && bgEl.getAttribute('data-latest-bg')) {
 					thumb = bgEl.getAttribute('data-latest-bg');
 				} else {
-					const all = Array.from(a.querySelectorAll('*')).concat(Array.from(container.querySelectorAll('*')));
-					for (const el of all) {
+					const ownAll = Array.from(a.querySelectorAll('*'));
+					const searchScope = exclusive ? ownAll.concat(Array.from(container.querySelectorAll('*'))) : ownAll;
+					for (const el of searchScope) {
 						const bg = window.getComputedStyle(el).backgroundImage;
 						if (bg && (bg.includes('googleusercontent.com') || bg.includes('usercontent.google.com'))) {
 							const m = bg.match(/url\(["']?(https:\/\/[^"')]+)["']?\)/);
@@ -644,9 +658,9 @@ func (r *Runner) extractVisibleAlbumsDOM(ctx context.Context) {
 
 			let title = '';
 			let itemCount = 0;
-			// 標題優先取連結自身的文字，避免共用容器時多本相簿寫入同一標題造成重複
+			// 標題優先取連結自身的文字，避免共用容器污染；容器文字僅在獨佔時才可作為後備
 			const ownText = ((a.innerText || '') + '\n' + (a.getAttribute('aria-label') || '')).trim();
-			const rawText = (ownText.replace(/^\s*\n+/, '').trim() || container.innerText || a.getAttribute('aria-label') || '').trim();
+			const rawText = (ownText.replace(/^\s*\n+/, '').trim() || (exclusive ? container.innerText : '') || a.getAttribute('aria-label') || '').trim();
 			const lines = rawText.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 
 			for (const line of lines) {
@@ -800,13 +814,16 @@ func (r *Runner) processAlbum(ctx context.Context, album db.Album) {
 	hasThumb := r.store.HasAlbumThumb(album.ID)
 	// 若本輪觀察到的封面 URL 與庫存不同（上一輪歸屬錯誤），強制重抓覆蓋，
 	// 否則錯誤封面會因 cover_thumb_path 非空而永久殘留。
-	needDownload := !hasThumb && album.CoverBaseURL != ""
-	if !needDownload && album.CoverBaseURL != "" {
+	// priorBase 同時用於下載失敗時還原，避免 DB 與縮圖檔分歧。
+	priorBase := existing.CoverBaseURL
+	if !seen {
 		if stored, err := r.store.GetAlbum(album.ID); err == nil {
-			if stored.CoverBaseURL != "" && stored.CoverBaseURL != album.CoverBaseURL {
-				needDownload = true
-			}
+			priorBase = stored.CoverBaseURL
 		}
+	}
+	needDownload := !hasThumb && album.CoverBaseURL != ""
+	if !needDownload && album.CoverBaseURL != "" && priorBase != "" && priorBase != album.CoverBaseURL {
+		needDownload = true
 	}
 	if needDownload {
 		relPath, err := r.downloadThumb(ctx, album.ID, album.CoverBaseURL)
@@ -815,6 +832,11 @@ func (r *Runner) processAlbum(ctx context.Context, album db.Album) {
 			r.mu.Lock()
 			r.seenAlbums[album.ID] = album
 			r.mu.Unlock()
+		} else if priorBase != "" && priorBase != album.CoverBaseURL {
+			// 下載失敗：沿用舊封面 URL，不寫入未驗證的新 URL，
+			// 否則 DB 存新 URL、檔案留舊圖造成永久分歧。
+			log.Printf("⚠️ 相簿封面下載失敗，沿用舊封面 (%s): %v", album.ID, err)
+			album.CoverBaseURL = priorBase
 		}
 	}
 

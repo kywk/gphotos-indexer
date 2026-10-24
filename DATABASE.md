@@ -122,7 +122,7 @@ CREATE INDEX IF NOT EXISTS idx_albums_title ON albums(title);
 | `id` | `TEXT` | `AF1QipAlbumKey...` | Google Photos 相簿唯一鍵。**相片 ID 絕不可寫入此表**：`SyncAlbums` 啟動與 `migrate` 開庫時會自動執行 `DELETE FROM albums WHERE id IN (SELECT id FROM media_items)` 清除誤判髒資料，確保中斷重跑具冪等性。 |
 | `title` | `TEXT` | `2026 日本東京滑雪行` | 相簿名稱。錯誤頁文字（`404` / `Not Found` / `Error` 前綴）會被解析器與 `processAlbum` 直接丟棄，避免污染。 |
 | `product_url` | `TEXT` | `https://photos.google.com/album/AF1Qip...` | 雲端相簿直接開啟連結。 |
-| `cover_thumb_path` | `TEXT` | `thumbs/AF1Qip...webp` | 本地封面縮圖路徑。若相簿列表未抓到封面，`SyncAlbumStats` 會自動回填相簿內最新相片之縮圖。 |
+| `cover_thumb_path` | `TEXT` | `thumbs/AF1Qip...webp` | 本地封面縮圖路徑。若相簿列表未抓到封面，`SyncAlbumStats` 會自動回填相簿內最新相片之縮圖。封面歸屬以相簿連結自身圖片為準（共用容器圖片不可用）；下載失敗時保留舊 `cover_base_url` 不寫入未驗證的新 URL。`doctor` 可以位元組比對揪出不同相簿共用同一封面（`duplicate_covers`）與封面不在相簿成員內的相簿（`cover_not_in_members`，索引未完成時可能誤報）。 |
 | `item_count` | `INTEGER` | `48` | 相簿包含的相片/影片總數。 |
 | `start_time` / `end_time` | `INTEGER` | `1769322730` / `1769904000` | 相簿涵蓋的拍攝時間區間（Unix 秒數）。若列表封包未提供，會在索引完相簿內相片後由 `MIN(taken_at)` / `MAX(taken_at)` 自動推算回填。 |
 
