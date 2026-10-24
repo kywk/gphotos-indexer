@@ -119,8 +119,8 @@ CREATE INDEX IF NOT EXISTS idx_albums_title ON albums(title);
 
 | 欄位名 | 類型 | 範例值 | 備註與 Agent 處理指南 |
 | :--- | :--- | :--- | :--- |
-| `id` | `TEXT` | `AF1QipAlbumKey...` | Google Photos 相簿唯一鍵。 |
-| `title` | `TEXT` | `2026 日本東京滑雪行` | 相簿名稱。可用於 `LIKE` 或精确比對以抽取特定相簿。 |
+| `id` | `TEXT` | `AF1QipAlbumKey...` | Google Photos 相簿唯一鍵。**相片 ID 絕不可寫入此表**：`SyncAlbums` 啟動與 `migrate` 開庫時會自動執行 `DELETE FROM albums WHERE id IN (SELECT id FROM media_items)` 清除誤判髒資料，確保中斷重跑具冪等性。 |
+| `title` | `TEXT` | `2026 日本東京滑雪行` | 相簿名稱。錯誤頁文字（`404` / `Not Found` / `Error` 前綴）會被解析器與 `processAlbum` 直接丟棄，避免污染。 |
 | `product_url` | `TEXT` | `https://photos.google.com/album/AF1Qip...` | 雲端相簿直接開啟連結。 |
 | `cover_thumb_path` | `TEXT` | `thumbs/AF1Qip...webp` | 本地封面縮圖路徑。若相簿列表未抓到封面，`SyncAlbumStats` 會自動回填相簿內最新相片之縮圖。 |
 | `item_count` | `INTEGER` | `48` | 相簿包含的相片/影片總數。 |

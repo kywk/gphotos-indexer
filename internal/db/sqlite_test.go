@@ -232,3 +232,203 @@ func TestStore_AlbumsAndAlbumItems(t *testing.T) {
 		t.Fatalf("依相簿標題關鍵字搜尋相片錯誤: 預期 2 筆, 實際 total=%d, err=%v", total, err)
 	}
 }
+
+func TestStore_CleanupSpuriousAlbums(t *testing.T) {
+	store := newTestStore(t)
+
+	// 模擬誤判髒資料：相片 ID 同時存在於 media_items 與 albums（同名重複相簿根因）
+	photoID := "AF1QipSpuriousPhoto0001"
+	realAlbumID := "AF1QipRealAlbum0000001"
+	if err := store.Upsert(MediaItem{ID: photoID, ThumbPath: "thumbs/" + photoID + ".webp"}); err != nil {
+		t.Fatalf("Upsert 相片失敗: %v", err)
+	}
+	if err := store.UpsertAlbum(Album{ID: photoID, Title: "17.02.12 Brussels (orig)", ItemCount: 194}); err != nil {
+		t.Fatalf("Upsert 誤判相簿失敗: %v", err)
+	}
+	if err := store.UpsertAlbum(Album{ID: realAlbumID, Title: "17.02.12 Brussels (orig)", ItemCount: 194}); err != nil {
+		t.Fatalf("Upsert 真實相簿失敗: %v", err)
+	}
+	if err := store.AddAlbumItem(photoID, photoID); err != nil {
+		t.Fatalf("AddAlbumItem 髒關聯失敗: %v", err)
+	}
+
+	if !store.HasMedia(photoID) || !store.HasAlbum(photoID) {
+		t.Fatalf("前置狀態錯誤：預期相片與誤判相簿同時存在")
+	}
+
+	deleted, err := store.CleanupSpuriousAlbums()
+	if err != nil {
+		t.Fatalf("CleanupSpuriousAlbums 失敗: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("預期清理 1 筆誤判相簿，實際 %d 筆", deleted)
+	}
+	if store.HasAlbum(photoID) {
+		t.Errorf("誤判相簿列應已被刪除")
+	}
+	if !store.HasMedia(photoID) {
+		t.Errorf("相片列不應被刪除")
+	}
+	if !store.HasAlbum(realAlbumID) {
+		t.Errorf("真實相簿不應被刪除")
+	}
+	if store.HasAlbumItem(photoID, photoID) {
+		t.Errorf("孤兒關聯應已被清理")
+	}
+
+	// 相片為準：DeleteAlbum 不得影響相片列
+	if err := store.UpsertAlbum(Album{ID: photoID, Title: "junk"}); err != nil {
+		t.Fatalf("重建髒資料失敗: %v", err)
+	}
+	if err := store.DeleteAlbum(photoID); err != nil {
+		t.Fatalf("DeleteAlbum 失敗: %v", err)
+	}
+	if store.HasAlbum(photoID) {
+		t.Errorf("DeleteAlbum 後相簿列應消失")
+	}
+	if !store.HasMedia(photoID) {
+		t.Errorf("DeleteAlbum 不得刪除相片列")
+	}
+}
+
+func TestStore_GetAlbum(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.UpsertAlbum(Album{ID: "AF1QipGetAlbum00001", Title: "測試相簿", CoverBaseURL: "https://lh3.googleusercontent.com/pw/cover1", ItemCount: 5}); err != nil {
+		t.Fatalf("UpsertAlbum 失敗: %v", err)
+	}
+	got, err := store.GetAlbum("AF1QipGetAlbum00001")
+	if err != nil {
+		t.Fatalf("GetAlbum 失敗: %v", err)
+	}
+	if got.Title != "測試相簿" || got.CoverBaseURL != "https://lh3.googleusercontent.com/pw/cover1" || got.ItemCount != 5 {
+		t.Errorf("GetAlbum 回傳不符: %+v", got)
+	}
+	if _, err := store.GetAlbum("AF1QipNonExistent00001"); err == nil {
+		t.Errorf("預期查詢不存在相簿應回傳錯誤")
+	}
+}
+
+func TestStore_Doctor(t *testing.T) {
+	store := newTestStore(t)
+
+	// 2 筆同名零索引重複 + 1 筆已收錄同名 + 1 筆跨表 + 1 筆空標題
+	for _, id := range []string{"AF1QipDoctorDup000001", "AF1QipDoctorDup000002"} {
+		if err := store.UpsertAlbum(Album{ID: id, Title: "重複相簿", ItemCount: 10}); err != nil {
+			t.Fatalf("UpsertAlbum 失敗: %v", err)
+		}
+	}
+	if err := store.UpsertAlbum(Album{ID: "AF1QipDoctorReal00001", Title: "重複相簿", ItemCount: 10}); err != nil {
+		t.Fatalf("UpsertAlbum 失敗: %v", err)
+	}
+	if err := store.Upsert(MediaItem{ID: "AF1QipDoctorPhoto0001", ThumbPath: "thumbs/AF1QipDoctorPhoto0001.webp"}); err != nil {
+		t.Fatalf("Upsert 相片失敗: %v", err)
+	}
+	if err := store.AddAlbumItem("AF1QipDoctorReal00001", "AF1QipDoctorPhoto0001"); err != nil {
+		t.Fatalf("AddAlbumItem 失敗: %v", err)
+	}
+	if err := store.UpsertAlbum(Album{ID: "AF1QipDoctorPhoto0001", Title: "跨表髒列"}); err != nil {
+		t.Fatalf("UpsertAlbum 失敗: %v", err)
+	}
+	if err := store.UpsertAlbum(Album{ID: "AF1QipDoctorEmpty00001"}); err != nil {
+		t.Fatalf("UpsertAlbum 失敗: %v", err)
+	}
+
+	rep, err := store.Doctor("")
+	if err != nil {
+		t.Fatalf("Doctor 失敗: %v", err)
+	}
+	if rep.AlbumsTotal != 5 || rep.MediaTotal != 1 || rep.LinksTotal != 1 {
+		t.Errorf("總數不符: %+v", rep)
+	}
+	if len(rep.CrossTableIDs) != 1 {
+		t.Errorf("應偵測 1 筆跨表，實際 %d", len(rep.CrossTableIDs))
+	}
+	if len(rep.EmptyTitleIDs) != 1 {
+		t.Errorf("應偵測 1 筆空標題，實際 %d", len(rep.EmptyTitleIDs))
+	}
+	if len(rep.DuplicateTitles) != 1 || rep.DuplicateTitles[0].Count != 3 {
+		t.Errorf("應偵測 1 組 3 列同名，實際 %+v", rep.DuplicateTitles)
+	}
+	if rep.DuplicateTitles[0].IndexedTotal != 1 {
+		t.Errorf("同名群組已收錄應為 1 筆，實際 %d", rep.DuplicateTitles[0].IndexedTotal)
+	}
+	if rep.DupZeroIndexRows != 2 {
+		t.Errorf("零索引重複列應為 2，實際 %d", rep.DupZeroIndexRows)
+	}
+	if !rep.Rebuildable() {
+		t.Errorf("預期 Rebuildable 為 true")
+	}
+	if !rep.HasIssues() {
+		t.Errorf("預期 HasIssues 為 true")
+	}
+}
+
+func TestStore_Rebuild(t *testing.T) {
+	store := newTestStore(t)
+
+	// 同名群組：2 筆零索引髒列 + 1 筆已收錄真列；另有跨表髒列與錯誤標題
+	for _, id := range []string{"AF1QipRebuildDup000001", "AF1QipRebuildDup000002"} {
+		if err := store.UpsertAlbum(Album{ID: id, Title: "重複相簿", ItemCount: 8}); err != nil {
+			t.Fatalf("UpsertAlbum 失敗: %v", err)
+		}
+	}
+	if err := store.UpsertAlbum(Album{ID: "AF1QipRebuildReal0001", Title: "重複相簿", ItemCount: 8}); err != nil {
+		t.Fatalf("UpsertAlbum 失敗: %v", err)
+	}
+	if err := store.Upsert(MediaItem{ID: "AF1QipRebuildPhoto001", ThumbPath: "thumbs/x.webp", TakenAt: 1769900000}); err != nil {
+		t.Fatalf("Upsert 相片失敗: %v", err)
+	}
+	if err := store.AddAlbumItem("AF1QipRebuildReal0001", "AF1QipRebuildPhoto001"); err != nil {
+		t.Fatalf("AddAlbumItem 失敗: %v", err)
+	}
+	if err := store.UpsertAlbum(Album{ID: "AF1QipRebuildPhoto001", Title: "跨表"}); err != nil {
+		t.Fatalf("UpsertAlbum 失敗: %v", err)
+	}
+	if err := store.UpsertAlbum(Album{ID: "AF1QipRebuildErr000001", Title: "Error 404 (Not Found)!!1"}); err != nil {
+		t.Fatalf("UpsertAlbum 失敗: %v", err)
+	}
+	if err := store.AddAlbumItem("AF1QipNoSuchAlbum00001", "AF1QipRebuildPhoto001"); err != nil {
+		t.Fatalf("AddAlbumItem 失敗: %v", err)
+	}
+
+	res, err := store.Rebuild()
+	if err != nil {
+		t.Fatalf("Rebuild 失敗: %v", err)
+	}
+	if res.SpuriousDeleted != 1 {
+		t.Errorf("預期清除 1 筆跨表，實際 %d", res.SpuriousDeleted)
+	}
+	if res.ZeroIndexedDupes != 2 {
+		t.Errorf("預期刪除 2 筆零索引重複，實際 %d", res.ZeroIndexedDupes)
+	}
+	if res.ErrorTitlesCleared != 1 {
+		t.Errorf("預期清除 1 筆錯誤標題，實際 %d", res.ErrorTitlesCleared)
+	}
+	// 孤兒關聯已由 CleanupSpuriousAlbums 順手清除，此處應為 0
+	if res.OrphanLinks != 0 {
+		t.Errorf("預期孤兒關聯已清零，實際 %d", res.OrphanLinks)
+	}
+	if !store.HasAlbum("AF1QipRebuildReal0001") {
+		t.Errorf("已收錄真列不得刪除")
+	}
+	if store.HasAlbum("AF1QipRebuildPhoto001") {
+		t.Errorf("跨表髒列應刪除")
+	}
+	got, _ := store.GetAlbum("AF1QipRebuildErr000001")
+	if got.Title != "" {
+		t.Errorf("錯誤標題應被清空，實際 %q", got.Title)
+	}
+	// 真列應已重算起訖時間（相片 taken_at 回填）
+	gotReal, _ := store.GetAlbum("AF1QipRebuildReal0001")
+	if gotReal.StartTime != 1769900000 || gotReal.EndTime != 1769900000 {
+		t.Errorf("Stats 應已重算，實際 Start=%d End=%d", gotReal.StartTime, gotReal.EndTime)
+	}
+	// 收尾健檢：跨表、孤兒、同名重複應全數消除
+	rep, err := store.Doctor("")
+	if err != nil {
+		t.Fatalf("Doctor 失敗: %v", err)
+	}
+	if len(rep.CrossTableIDs) != 0 || rep.OrphanLinksAlbum != 0 || rep.OrphanLinksMedia != 0 || len(rep.DuplicateTitles) != 0 {
+		t.Errorf("Rebuild 後仍有殘留問題: %+v", rep)
+	}
+}

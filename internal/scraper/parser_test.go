@@ -179,3 +179,83 @@ func TestParseAlbumsBatchExecute(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAlbumsBatchExecute_RejectsPhotoWithAlbumTitle(t *testing.T) {
+	// 迴歸測試：相簿內頁 payload 中每張相片陣列旁夾帶父相簿標題字串時，
+	// 不可將相片 ID 誤判為相簿（否則中斷重跑會產生大量同名重複相簿）。
+	mockResponse := ")]}'\n\n" +
+		"100\n" +
+		"[" +
+		"  [\"wrb.fr\", \"Z5xsfc\", \"[[[\\\"AF1QipMockRealAlbum0001\\\",[[\\\"https://lh3.googleusercontent.com/pw/AP1GczAlbumCover=w400-h400-c\\\",1200,900]],null,null,{\\\"72930366\\\":[194,\\\"17.02.12 Brussels (orig)\\\",[1483225200000,1485907200000]]}]]]\", null, null, null, \"generic\"]" +
+		"]\n" +
+		"120\n" +
+		"[" +
+		"  [\"wrb.fr\", \"sy123\", \"[[\\\"AF1QipMockPhotoInner001\\\",null,1483225200000,null,[\\\"https://lh3.googleusercontent.com/pw/AP1GczPhotoBase1=w800-h600-no\\\",4032,3024],\\\"17.02.12 Brussels (orig)\\\"],[\\\"AF1QipMockPhotoInner002\\\",null,1483225300000,null,[\\\"https://lh3.googleusercontent.com/pw/AP1GczPhotoBase2=w800-h600-no\\\",4032,3024],\\\"17.02.12 Brussels (orig)\\\",194]]\", null, null, null, \"generic\"]" +
+		"]\n"
+
+	albums := ParseAlbumsBatchExecute(mockResponse)
+	if len(albums) != 1 {
+		t.Fatalf("僅真實相簿應被解析，預期 1 筆，實際取得 %d 筆", len(albums))
+	}
+	if albums[0].ID != "AF1QipMockRealAlbum0001" {
+		t.Fatalf("解析出的相簿 ID 不符: got %s", albums[0].ID)
+	}
+	if albums[0].ItemCount != 194 {
+		t.Errorf("真實相簿項目數應為 194, got %d", albums[0].ItemCount)
+	}
+}
+
+func TestParseAlbumsBatchExecute_RejectsErrorTitle(t *testing.T) {
+	// 迴歸測試：錯誤頁文字（如無效相簿 URL 的 404 頁）不可成為相簿標題。
+	if isCandidateAlbumTitle("Error 404 (Not Found)!!1") {
+		t.Errorf("錯誤頁文字不應被視為合法相簿標題")
+	}
+	mockResponse := ")]}'\n\n" +
+		"100\n" +
+		"[" +
+		"  [\"wrb.fr\", \"Z5xsfc\", \"[[[\\\"AF1QipMockErrorAlbum0001\\\",[[\\\"https://lh3.googleusercontent.com/pw/AP1GczCover=w400-h400-c\\\",100,100]],\\\"Error 404 (Not Found)!!1\\\"]]]\", null, null, null, \"generic\"]" +
+		"]\n"
+	albums := ParseAlbumsBatchExecute(mockResponse)
+	for _, a := range albums {
+		if a.ID == "AF1QipMockErrorAlbum0001" {
+			t.Errorf("錯誤標題節點不應被解析為相簿: Title=%q", a.Title)
+		}
+	}
+}
+
+func TestParseAlbumsBatchExecute_RejectsPhotoInAlbumContext(t *testing.T) {
+	// 迴歸測試（真實封包形狀）：相簿內頁相片節點 arr[1] 為 [url, w, h] 元組、
+	// arr[2..6] 為 null、附帶父相簿 ID 參照，且 72930366 內含父相簿標題與數量時，
+	// 不可將相片 ID 誤判為相簿（線上曾因此產生 17 筆同名 Brussels 重複相簿）。
+	mockResponse := ")]}'\n\n" +
+		"100\n" +
+		"[" +
+		"  [\"wrb.fr\", \"Z5xsfc\", \"[[[\\\"AF1QipMockRealAlbum0002\\\",[[\\\"https://lh3.googleusercontent.com/pw/AP1GczAlbumCover=w400-h400-c\\\",1200,900]],null,null,{\\\"72930366\\\":[194,\\\"17.02.12 Brussels (orig)\\\",[1483225200000,1485907200000]]}]]]\", null, null, null, \"generic\"]" +
+		"]\n" +
+		"120\n" +
+		"[" +
+		"  [\"wrb.fr\", \"sy123\", \"[[\\\"AF1QipMockCtxPhoto000001\\\",[\\\"https://lh3.googleusercontent.com/pw/AP1GczCtxPhoto1\\\",4032,3024,null,null,null,null,null,null,[4094388]],null,null,null,null,[\\\"AF1QipMockRealAlbum0002\\\"],[[3],[4]],{\\\"72930366\\\":[1,\\\"17.02.12 Brussels (orig)\\\",[1486886840000,1487075846000,null,null,1487329187000],194,null,null]}]]\", null, null, null, \"generic\"]" +
+		"]\n"
+
+	albums := ParseAlbumsBatchExecute(mockResponse)
+	if len(albums) != 1 {
+		t.Fatalf("僅真實相簿應被解析，預期 1 筆，實際取得 %d 筆", len(albums))
+	}
+	if albums[0].ID != "AF1QipMockRealAlbum0002" {
+		t.Fatalf("解析出的相簿 ID 不符: got %s", albums[0].ID)
+	}
+
+	// 真實相簿若封面元組自帶解析度且頂層自帶標題與數量，仍須正常接受
+	mockReal := ")]}'\n\n" +
+		"100\n" +
+		"[" +
+		"  [\"wrb.fr\", \"Z5xsfc\", \"[[[\\\"AF1QipMockRealAlbum0003\\\",[\\\"https://lh3.googleusercontent.com/pw/AP1GczCover3\\\",1200,900],\\\"家庭聚餐相簿\\\",15,[1759000000000,1759086400000]]]]\", null, null, null, \"generic\"]" +
+		"]\n"
+	albums2 := ParseAlbumsBatchExecute(mockReal)
+	if len(albums2) != 1 || albums2[0].ID != "AF1QipMockRealAlbum0003" {
+		t.Fatalf("自帶解析度的真實相簿應被接受，實際取得 %d 筆", len(albums2))
+	}
+	if albums2[0].ItemCount != 15 {
+		t.Errorf("真實相簿項目數應為 15, got %d", albums2[0].ItemCount)
+	}
+}

@@ -258,6 +258,15 @@ func isCandidateAlbumTitle(s string) bool {
 	if reMediaKey.MatchString(s) || reFilename.MatchString(s) {
 		return false
 	}
+	// 排除錯誤頁面或破圖提示文字，避免誤判為相簿標題
+	// 例如進入無效相簿 URL 時會出現 "Error 404 (Not Found)!!1"
+	lower := strings.ToLower(s)
+	if strings.Contains(s, "404") || strings.Contains(lower, "not found") || strings.HasPrefix(lower, "error") {
+		return false
+	}
+	if strings.Contains(s, "!!") {
+		return false
+	}
 	return true
 }
 
@@ -376,30 +385,49 @@ func extractFieldsFromAlbumArray(arr []any, album *db.Album) bool {
 		return false
 	}
 
-	// 檢查是否為標準單張相片結構 (arr[2] 為單一拍攝毫秒時間戳且無相簿擴充欄位與標題)
+	// 相片節點的 arr[2] 為單一拍攝毫秒時間戳；相簿元組的 arr[2] 通常為封面陣列或標題字串。
+	// 若為疑似單張相片且無相簿擴充欄位，直接拒絕，避免將相片誤判為相簿
+	// （例如相簿內頁 payload 中每張相片陣列旁夾帶父相簿標題字串時）。
 	isLikelySinglePhoto := false
 	if len(arr) > 2 && !hasExt {
 		if tsMs, ok := toFloat64(arr[2]); ok && isValidTimestampMs(tsMs) {
 			isLikelySinglePhoto = true
 		}
 	}
+	if isLikelySinglePhoto {
+		return false
+	}
 
+	topHasTitle := false
+	topHasCount := false
 	for i := 1; i < len(arr); i++ {
 		switch v := arr[i].(type) {
 		case string:
 			if isCandidateAlbumTitle(v) && album.Title == "" {
 				album.Title = strings.TrimSpace(v)
+				topHasTitle = true
 			}
 		case float64, int, int64:
 			if n, ok := toInt(v); ok && n > 0 && n < 100000 && album.ItemCount == 0 && !isLikelySinglePhoto {
 				album.ItemCount = n
+				topHasCount = true
 			}
 		}
 	}
 
 	scanAlbumSubtree(arr, album)
 
-	if hasExt || album.Title != "" || (album.StartTime > 0 && album.EndTime > 0) {
+	// 相簿內頁相片節點夾帶父相簿上下文時，arr[1] 為 [url, w, h] 相片元組，
+	// 且標題與數量皆僅來自 72930366 擴充（頂層自帶皆無）：一律視為相片拒絕，
+	// 否則每張相片都會產生一筆同名同數量的重複相簿。
+	if isPhotoMediaTuple(firstElem(arr)) && !topHasTitle && !topHasCount {
+		return false
+	}
+
+	// 驗收門檻：必須具備相簿擴充欄位，或同時具備標題與（數量或時間區間）。
+	// 僅有標題（例如相片陣列旁夾帶的父相簿標題、錯誤頁文字）一律拒絕，
+	// 避免中斷後重跑時每張相片都產生一筆同名相簿造成重複。
+	if hasExt || (album.Title != "" && (album.ItemCount > 0 || (album.StartTime > 0 && album.EndTime > 0))) {
 		rawBytes, _ := json.Marshal(arr)
 		if len(rawBytes) < 4096 {
 			album.RawMetadata = string(rawBytes)
@@ -407,6 +435,29 @@ func extractFieldsFromAlbumArray(arr []any, album *db.Album) bool {
 		return true
 	}
 	return false
+}
+
+func firstElem(arr []any) any {
+	if len(arr) > 1 {
+		return arr[1]
+	}
+	return nil
+}
+
+// isPhotoMediaTuple 判斷是否為相片元組 [url, w, h, ...]（相簿內頁相片節點的 arr[1] 形狀）。
+// 真實相簿節點的 arr[1] 為封面巢狀陣列 [[url, w, h]]、純網址 [url] 或標題字串，不符合此形狀。
+func isPhotoMediaTuple(v any) bool {
+	t, ok := v.([]any)
+	if !ok || len(t) < 3 {
+		return false
+	}
+	u, ok := t[0].(string)
+	if !ok || !isGoogleMediaURL(u) {
+		return false
+	}
+	w, ok1 := toInt(t[1])
+	h, ok2 := toInt(t[2])
+	return ok1 && ok2 && w > 0 && w < 50000 && h > 0 && h < 50000
 }
 
 func scanAlbumSubtree(node any, album *db.Album) {

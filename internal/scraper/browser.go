@@ -251,6 +251,12 @@ func (r *Runner) SyncAlbums(ctx context.Context) error {
 		return err
 	}
 
+	// 先清理舊髒資料：曾被誤判為相簿的相片列會造成同名相簿重複，
+	// 清理後再開始本輪索引，確保中斷後重跑具冪等性。
+	if n, err := r.store.CleanupSpuriousAlbums(); err == nil && n > 0 {
+		log.Printf("🧹 已清理 %d 筆誤判的相簿髒資料（相片 ID 誤作相簿）。", n)
+	}
+
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.UserDataDir(r.profileDir()),
 		chromedp.Flag("headless", r.cfg.Headless),
@@ -409,12 +415,57 @@ func (r *Runner) SyncAlbums(ctx context.Context) error {
 	}
 	r.mu.Unlock()
 
-	log.Printf("📚 共收集到 %d 本相簿，開始逐一巡覽建立相簿內相片索引...", len(albums))
+	// Phase 1b：確保每本相簿都有封面（第一階段只建相簿不碰內頁）。
+	//  complements processAlbum 即時下載，補齊當時失敗者並輸出摘要。
+	coverOK, coverFixed, coverFail := 0, 0, 0
+	for _, alb := range albums {
+		if r.store.HasAlbumThumb(alb.ID) {
+			coverOK++
+			continue
+		}
+		base := alb.CoverBaseURL
+		if base == "" {
+			if stored, err := r.store.GetAlbum(alb.ID); err == nil {
+				base = stored.CoverBaseURL
+			}
+		}
+		if base == "" {
+			coverFail++
+			continue
+		}
+		if relPath, err := r.downloadThumb(taskCtx, alb.ID, base); err == nil {
+			_ = r.store.UpsertAlbum(db.Album{ID: alb.ID, CoverThumbPath: relPath, CoverBaseURL: base})
+			coverFixed++
+		} else {
+			coverFail++
+		}
+	}
+	log.Printf("📚 共收集到 %d 本相簿（已有封面 %d，補齊 %d，缺封面 %d），開始逐一巡覽建立相簿內相片索引...",
+		len(albums), coverOK, coverFixed, coverFail)
+
+	// 斷點續跑：讀取各相簿已收錄進度，已完成（數量達標且有封面）且非強制全量者直接跳過。
+	progress := make(map[string]db.Album)
+	if !r.cfg.ForceFull {
+		if listed, err := r.store.ListAlbums(); err == nil {
+			for _, a := range listed {
+				progress[a.ID] = a
+			}
+		}
+	}
 
 	totalLinkedItems := 0
+	skippedAlbums := 0
 	for idx, alb := range albums {
 		if ctx.Err() != nil {
 			break
+		}
+
+		if !r.cfg.ForceFull {
+			if p, ok := progress[alb.ID]; ok && p.ItemCount > 0 && p.IndexedCount >= p.ItemCount && p.CoverThumbPath != "" {
+				skippedAlbums++
+				log.Printf("⏩ [%d/%d] 相簿《%s》已完成（%d/%d），跳過。", idx+1, len(albums), displayAlbumTitle(p), p.IndexedCount, p.ItemCount)
+				continue
+			}
 		}
 
 		r.mu.Lock()
@@ -440,24 +491,7 @@ func (r *Runner) SyncAlbums(ctx context.Context) error {
 		}
 
 		r.extractAlbumHeaderDOM(taskCtx, alb.ID)
-
-		var albScripts []string
-		_ = chromedp.Run(taskCtx, chromedp.Evaluate(
-			"Array.from(document.querySelectorAll('script')).map(s => s.textContent).filter(t => t.includes('AF1Qip'))",
-			&albScripts,
-		))
-		for _, scriptTxt := range albScripts {
-			for _, parsedAlb := range ParseAlbumsBatchExecute(scriptTxt) {
-				if parsedAlb.ID == alb.ID {
-					r.processAlbum(taskCtx, parsedAlb)
-				}
-			}
-			for _, it := range ParseBatchExecute(scriptTxt) {
-				if it.ID != alb.ID {
-					r.processItem(taskCtx, it)
-				}
-			}
-		}
+		r.ingestAlbumPageScripts(taskCtx, alb.ID)
 
 		albBottom := 0
 		albLastSaved := 0
@@ -511,6 +545,13 @@ func (r *Runner) SyncAlbums(ctx context.Context) error {
 			time.Sleep(jitter)
 		}
 
+		// 最終補掃：捲動結束後再收一次 DOM 與頁面腳本，
+		// 讓飛行中的網路封包回呼有時間入庫，補齊相片縮圖、拍攝時間與解析度，
+		// 無需另跑 sync -fetch-details（檔名/EXIF 仍需 -fetch-details）。
+		time.Sleep(1500 * time.Millisecond)
+		r.extractVisibleDOM(taskCtx)
+		r.ingestAlbumPageScripts(taskCtx, alb.ID)
+
 		if r.cfg.FetchDetails {
 			log.Printf("🔍 正在補齊相簿《%s》內相片的原始檔名與 EXIF...", titleDisplay)
 			r.enrichDetailsViaUI(taskCtx)
@@ -525,9 +566,42 @@ func (r *Runner) SyncAlbums(ctx context.Context) error {
 
 	totalAlbums, _ := r.store.CountAlbums()
 	totalPhotos, _ := r.store.Count()
-	log.Printf("🎉 相簿索引完成！本次處理 %d 本相簿（關聯 %d 筆相片項目），本地資料庫共索引 %d 本相簿、%d 張相片。",
-		len(albums), totalLinkedItems, totalAlbums, totalPhotos)
+	log.Printf("🎉 相簿索引完成！本次處理 %d 本相簿（跳過已完成 %d 本，關聯 %d 筆相片項目），本地資料庫共索引 %d 本相簿、%d 張相片。",
+		len(albums), skippedAlbums, totalLinkedItems, totalAlbums, totalPhotos)
 	return nil
+}
+
+// displayAlbumTitle 相簿顯示用標題（無標題時以 ID 縮寫代替）。
+func displayAlbumTitle(alb db.Album) string {
+	if alb.Title != "" {
+		return alb.Title
+	}
+	if len(alb.ID) > 14 {
+		return alb.ID[:14] + "..."
+	}
+	return alb.ID
+}
+
+// ingestAlbumPageScripts 解析相簿內頁初始腳本，同時建立相簿資訊與相片資訊，
+// 進入相簿時與捲動結束後各呼叫一次，確保封包內容完整入庫。
+func (r *Runner) ingestAlbumPageScripts(ctx context.Context, albumID string) {
+	var albScripts []string
+	_ = chromedp.Run(ctx, chromedp.Evaluate(
+		"Array.from(document.querySelectorAll('script')).map(s => s.textContent).filter(t => t.includes('AF1Qip'))",
+		&albScripts,
+	))
+	for _, scriptTxt := range albScripts {
+		for _, parsedAlb := range ParseAlbumsBatchExecute(scriptTxt) {
+			if parsedAlb.ID == albumID {
+				r.processAlbum(ctx, parsedAlb)
+			}
+		}
+		for _, it := range ParseBatchExecute(scriptTxt) {
+			if it.ID != albumID {
+				r.processItem(ctx, it)
+			}
+		}
+	}
 }
 
 type domAlbum struct {
@@ -546,16 +620,18 @@ func (r *Runner) extractVisibleAlbumsDOM(ctx context.Context) {
 		});
 		return links.map(a => {
 			const container = a.closest('[role="listitem"]') || a.parentElement || a;
+			// 封面歸屬必須優先取連結自身內的 <img>，避免共用容器時多本相簿抓到同一張首圖
 			let thumb = '';
-			const img = container.querySelector('img');
-			if (img && img.src && (img.src.includes('googleusercontent.com') || img.src.includes('usercontent.google.com') || img.src.includes('ggpht.com'))) {
-				thumb = img.src;
+			const ownImg = a.querySelector('img');
+			const scopedImg = (ownImg && ownImg.src && (ownImg.src.includes('googleusercontent.com') || ownImg.src.includes('usercontent.google.com') || ownImg.src.includes('ggpht.com'))) ? ownImg : container.querySelector('img');
+			if (scopedImg && scopedImg.src && (scopedImg.src.includes('googleusercontent.com') || scopedImg.src.includes('usercontent.google.com') || scopedImg.src.includes('ggpht.com'))) {
+				thumb = scopedImg.src;
 			} else {
-				const bgEl = container.querySelector('[data-latest-bg]');
+				const bgEl = a.querySelector('[data-latest-bg]') || container.querySelector('[data-latest-bg]');
 				if (bgEl && bgEl.getAttribute('data-latest-bg')) {
 					thumb = bgEl.getAttribute('data-latest-bg');
 				} else {
-					const all = Array.from(container.querySelectorAll('*'));
+					const all = Array.from(a.querySelectorAll('*')).concat(Array.from(container.querySelectorAll('*')));
 					for (const el of all) {
 						const bg = window.getComputedStyle(el).backgroundImage;
 						if (bg && (bg.includes('googleusercontent.com') || bg.includes('usercontent.google.com'))) {
@@ -568,7 +644,9 @@ func (r *Runner) extractVisibleAlbumsDOM(ctx context.Context) {
 
 			let title = '';
 			let itemCount = 0;
-			const rawText = (container.innerText || a.innerText || a.getAttribute('aria-label') || '').trim();
+			// 標題優先取連結自身的文字，避免共用容器時多本相簿寫入同一標題造成重複
+			const ownText = ((a.innerText || '') + '\n' + (a.getAttribute('aria-label') || '')).trim();
+			const rawText = (ownText.replace(/^\s*\n+/, '').trim() || container.innerText || a.getAttribute('aria-label') || '').trim();
 			const lines = rawText.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 
 			for (const line of lines) {
@@ -672,6 +750,21 @@ func (r *Runner) processAlbum(ctx context.Context, album db.Album) {
 	if album.ID == "" {
 		return
 	}
+	if !reMediaKey.MatchString(album.ID) {
+		return
+	}
+	// 相片 ID 絕不可成為相簿：若該 ID 已是相片（曾被誤判），直接跳過
+	// 避免與 thumbs/<photoID>.webp 相片縮圖檔 colliding 造成封面錯亂
+	if r.store.HasMedia(album.ID) {
+		return
+	}
+	// 過濾錯誤頁文字被誤抽為標題的情況（例如無效相簿 URL 的 404 頁）
+	if t := album.Title; t != "" {
+		lt := strings.ToLower(strings.TrimSpace(t))
+		if strings.Contains(t, "404") || strings.Contains(lt, "not found") || strings.HasPrefix(lt, "error") || strings.Contains(t, "!!") {
+			album.Title = ""
+		}
+	}
 
 	r.mu.Lock()
 	existing, seen := r.seenAlbums[album.ID]
@@ -705,7 +798,17 @@ func (r *Runner) processAlbum(ctx context.Context, album db.Album) {
 	r.mu.Unlock()
 
 	hasThumb := r.store.HasAlbumThumb(album.ID)
-	if !hasThumb && album.CoverBaseURL != "" {
+	// 若本輪觀察到的封面 URL 與庫存不同（上一輪歸屬錯誤），強制重抓覆蓋，
+	// 否則錯誤封面會因 cover_thumb_path 非空而永久殘留。
+	needDownload := !hasThumb && album.CoverBaseURL != ""
+	if !needDownload && album.CoverBaseURL != "" {
+		if stored, err := r.store.GetAlbum(album.ID); err == nil {
+			if stored.CoverBaseURL != "" && stored.CoverBaseURL != album.CoverBaseURL {
+				needDownload = true
+			}
+		}
+	}
+	if needDownload {
 		relPath, err := r.downloadThumb(ctx, album.ID, album.CoverBaseURL)
 		if err == nil {
 			album.CoverThumbPath = relPath
@@ -920,6 +1023,9 @@ func (r *Runner) processItem(ctx context.Context, item db.MediaItem) {
 	if item.ID == "" {
 		return
 	}
+	if !reMediaKey.MatchString(item.ID) {
+		return
+	}
 
 	r.mu.Lock()
 	curAlbumID := r.currentAlbumID
@@ -962,6 +1068,11 @@ func (r *Runner) processItem(ctx context.Context, item db.MediaItem) {
 	if err := r.store.Upsert(item); err != nil {
 		log.Printf("⚠️ 寫入資料庫失敗 (%s): %v", item.ID, err)
 		return
+	}
+
+	// 相片為準：若該 ID 曾被誤判為相簿列，立即移除以避免同名重複與封面錯亂
+	if r.store.HasAlbum(item.ID) {
+		_ = r.store.DeleteAlbum(item.ID)
 	}
 
 	if curAlbumID != "" {

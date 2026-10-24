@@ -87,6 +87,7 @@
 4. 相簿與影片 Protobuf Extension Key：
    - `"76647426"`：影片專用擴充欄位，索引 0 為毫秒時長，索引 2、3 為影片寬高。
    - `"72930366"`：相簿專用擴充欄位，包含項目數量、相簿標題與 `[startTimeMs, endTimeMs]` 時間區間；`ParseBatchExecute` 遇到此欄位時自動排除避免將相簿誤判為單張相片。
+   - 相簿驗收鐵律（防重複回歸）：`ParseAlbumsBatchExecute` 僅在具備 `72930366` 擴充，或同時具備（標題＋數量/時間區間）時才接受為相簿；`arr[2]` 為有效拍攝時間戳且無擴充者一律視為單張相片拒絕，避免相簿內頁每張相片各產生一筆同名相簿。錯誤頁文字（`404`、`Not Found`、`Error` 前綴、`!!`）永不視為合法標題。
 5. 圖片伺服器參數 (lh3.googleusercontent.com)：
    - 縮圖參數：=w300-h300-c-rw（300x300 置中裁切，強制輸出 WebP）。
    - 預覽大圖：=w1200-rw。
@@ -95,6 +96,10 @@
 - Watermark 停損機制：
   - 主時間軸 (`sync`)：若連續遇到 30 張已存在於本地 SQLite 且已有縮圖的 MediaKey，自動停止捲動。
   - 相簿內頁 (`albums`)：僅當相片已有縮圖 **且** 已存在於該相簿的 `album_items` 關聯中時才計入 Watermark，確保先前已被 `sync` 下載過縮圖的相片在首次執行 `albums` 時仍能完整寫入 `album_items` 關聯而不重抓縮圖。
+- 兩階段保證與斷點續跑 (`albums`)：
+  - 第一階段列出所有相簿並補齊每本封面後，才進入第二階段逐本收錄相片；已完成（數量達標且有封面）的相簿自動跳過，中斷重跑具冪等性。
+  - 每本相簿捲動結束後最終補掃 DOM 與頁面腳本，縮圖、拍攝時間與解析度直接入庫；原始檔名與 EXIF 仍需 `-fetch-details`。
+- 健檢與修復 (`doctor` / `rebuild`)：`doctor` 唯讀檢查同標題多列、跨表髒列、孤兒關聯與遺失縮圖；`rebuild` 離線清除零索引重複相簿並重算統計，相簿列可由下次 `albums` 全量掃描重建。
 - Jitter 延遲：每次捲動與詳情切換皆加入隨機抖動延遲，避免觸發 Google 429 Too Many Requests。
 
 ## 6. 測試規格與不變量 (Test Suite & Invariants)
@@ -103,9 +108,11 @@
    - TestStore_UpsertPreservesNonEmptyFields：驗證兩階段寫入互不洗掉既有欄位。
    - TestStore_SearchFilters：驗證 FTS5 unicode61 分詞器對中文地名、英文檔名、日期區間與媒體類型的複合過濾。
    - TestStore_AlbumsAndAlbumItems：驗證相簿非破壞性合併、`album_items` 關聯、`SyncAlbumStats` 起訖時間自動推算，以及依 `AlbumID` 與相簿標題搜尋相片。
+   - TestStore_CleanupSpuriousAlbums / TestStore_Doctor / TestStore_Rebuild / TestStore_GetAlbum：驗證跨表髒列清理、同標題多列偵測、離線重建與單筆查詢。
 2. internal/scraper/parser_test.go：
    - TestParseBatchExecute：驗證多段長度前綴解析、BaseURL 參數剝除、.MOV/.MP4 影片類型推斷與 GPS 整數排除邏輯。
    - TestParseBatchExecute_InvalidInput：確保畸形封包不會引發 panic。
    - TestParseAlbumsBatchExecute：驗證相簿封包 (`72930366` 擴充與直接元組) 解析，並確認與一般相片節點互不誤判。
+   - TestParseAlbumsBatchExecute_RejectsPhotoWithAlbumTitle / TestParseAlbumsBatchExecute_RejectsPhotoInAlbumContext / TestParseAlbumsBatchExecute_RejectsErrorTitle：驗證相片夾帶父相簿標題或錯誤頁文字時不誤判為相簿。
 3. internal/server/server_test.go：
    - TestServer_APISearchAndIndex：使用 httptest 驗證 `/api/photos`（含 `album_id` 過濾）、`/api/albums` 與 `go:embed index.html` 渲染。
